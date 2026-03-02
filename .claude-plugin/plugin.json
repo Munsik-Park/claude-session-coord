@@ -1,0 +1,11 @@
+{
+  "name": "claude-session-coord",
+  "version": "1.0.0",
+  "description": "Inter-session coordination for Claude Code — message exchange between concurrent AI sessions",
+  "author": {
+    "name": "Munsik Park"
+  },
+  "repository": "https://github.com/Munsik-Park/claude-session-coord",
+  "license": "MIT",
+  "keywords": ["coordination", "multi-session", "handoff", "mcp"]
+}

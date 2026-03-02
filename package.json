@@ -1,0 +1,13 @@
+{
+  "name": "claude-session-coord",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Inter-session coordination plugin for Claude Code",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "better-sqlite3": "^11.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
