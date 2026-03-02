@@ -14,10 +14,10 @@ Only post when your work has **cross-session impact**.
 
 | Condition | message_type | Example |
 |-----------|-------------|---------|
-| Shared interface/schema changed | `handoff` | DB migration, API contract change, ontology update |
-| Another session needs to act on your output | `request` | "Reprocess items with new extraction rules" |
-| Work completed that others should know about | `info` | "50 items registered", "benchmark results ready" |
-| Claiming ownership of a work area | `role_claim` | "I'm handling the data crawling pipeline" |
+| Shared interface/schema changed | `handoff` | API endpoint added, DB migration, ontology update |
+| Another session needs to act on your output | `request` | "Need product detail API" |
+| Work completed that others should know about | `info` | "50 items registered", "benchmark ready" |
+| Claiming ownership of a work area | `role_claim` | "I'm handling the API server" |
 
 ### Decision Flow
 
@@ -39,14 +39,42 @@ Did I change something another session depends on?
 
 ## Message Conventions
 
-- `session_id`: Use descriptive names (e.g. `ontology-evolution`, `data-crawling`, `frontend-dev`)
-- `project`: Use when multiple projects share the coordination DB
+- `session_id`: Use descriptive names (e.g. `backend`, `frontend`, `data-crawling`)
+- `project`: Use when multiple projects share the coordination DB (e.g. `shopping-mall`)
 - `subject`: Keep brief — the body carries details
-- `body`: Structured JSON with actionable information
+- `body`: Structured JSON with actionable information (e.g. API specs, schema changes)
 
 ## Acknowledging Messages
 
 When you see a pending message relevant to your session:
-1. Read and understand the message
-2. Take any required action
+1. Read and understand the message (`coord_check`)
+2. Take any required action (implement, update code, etc.)
 3. Acknowledge with `coord_ack` (include a note about what you did)
+
+## Example: Backend→Frontend Handoff
+
+```
+coord_post:
+  session_id:   "backend"
+  message_type: "handoff"
+  subject:      "Product listing API ready: GET /api/products"
+  body: {
+    "endpoint": "GET /api/products",
+    "response": { "products": [{ "id": "string", "name": "string", "price": "number" }] }
+  }
+  project: "shopping-mall"
+```
+
+## Example: Frontend→Backend Request
+
+```
+coord_post:
+  session_id:   "frontend"
+  message_type: "request"
+  subject:      "Need product detail API: GET /api/products/:id"
+  body: {
+    "reason": "Product click navigates to detail page",
+    "expected_response": { "id": "string", "name": "string", "description": "string" }
+  }
+  project: "shopping-mall"
+```

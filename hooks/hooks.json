@@ -1,18 +1,5 @@
 {
-  "description": "Inter-session coordination hooks — pending message alerts on session start",
   "hooks": {
-    "Setup": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/setup.sh\"",
-            "timeout": 60
-          }
-        ]
-      }
-    ],
     "SessionStart": [
       {
         "matcher": "startup|clear|compact",
