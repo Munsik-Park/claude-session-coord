@@ -65,66 +65,103 @@ coord_post:
   project: "shopping-mall"
 ```
 
-## AI-to-AI Conversations
+## Conversation Mode (Autonomous AI-to-AI)
 
-Two AI sessions can have a back-and-forth conversation through the coordination board.
-The user only needs to type "계속" (or any prompt) to trigger the `UserPromptSubmit` hook,
-which displays pending messages inline — no manual `coord_check` needed.
+Two AI sessions can have an **autonomous** back-and-forth conversation using the Stop hook.
+After the conversation starts, the AIs exchange messages automatically — the user only intervenes to steer direction or end the conversation.
+
+Use `/start-conv` to begin. See the `start-conv` skill for detailed usage.
+
+### How It Works
+
+```
+AI responds → Stop hook fires
+  → Check conv state file
+  → Query SQLite for partner's pending messages
+  → Found → {"decision":"block","reason":"<msg>"} → auto-reinject → AI responds again
+  → Not found → poll 3s intervals, max 15s
+  → Timeout → exit 0 (idle) → user prompt resumes the cycle
+```
 
 ### Starting a Conversation
 
-When the user says something like "크롤링에게 물어봐" or "ask the backend session":
+1. **Terminal A**: User runs `/start-conv new` → AI creates a room, gets code (e.g. `conv-x7k2`)
+2. **Terminal B**: User runs `/start-conv conv-x7k2` → AI joins, sends greeting
+3. **Both terminals**: Stop hooks begin autonomous message exchange
+
+### Turn Progression (Autonomous)
 
 ```
-coord_post:
-  session_id:   "<your-session>"
-  message_type: "request"
-  subject:      "Question about X"
-  body:         { "question": "How should we handle Y?", "context": "..." }
-  project:      "<shared-project>"
+Terminal A                                Terminal B
+  /start-conv new                           /start-conv conv-x7k2
+  AI-A: "Room conv-x7k2 created"           AI-B: joins → sends greeting
+                                            Stop hook: no partner msg → idle
+  User: "Discuss crawling attributes"
+  AI-A → coord_reply(question)
+  Stop hook → polls...                      Stop hook → partner msg found!
+                                            AI-B → auto-response → coord_reply
+  Stop hook → partner msg found!            Stop hook → polls...
+  AI-A → auto-response → coord_reply
+  Stop hook → polls...                      Stop hook → partner msg found!
+  ...                                       ...
+  (autonomous exchange continues)
 ```
 
-### Replying to a Message
+### User Intervention
 
-When a pending message appears (via hook or `coord_check`), use `coord_reply`:
+The user can type **at any time** to steer the conversation:
+- Direction: "Focus on normalization rules" → AI includes this in next reply
+- End: "Stop" or "End conversation" → AI calls `coord_conv_end`
 
-```
-coord_reply:
-  message_id:  "<original-message-id>"
-  session_id:  "<your-session>"
-  body:        { "answer": "We should do Z because...", "action_taken": "..." }
-```
+### Displaying Conversation Content
 
-`coord_reply` does two things in one call:
-1. **Acknowledges** the original message (marks it `acknowledged`)
-2. **Posts a new reply** as `pending` with `ref_message_id` pointing to the original
-
-### Conversation Flow
+Show partner messages in blockquote format:
 
 ```
-Terminal A (user: "크롤링에게 물어봐")     Terminal B (user: "계속")
-  AI-A → coord_post(question)               Hook fires → shows question inline
-                                             AI-B reads question, acts on it
-                                             AI-B → coord_reply(answer)
-  User: "계속" → Hook fires → shows answer
-  AI-A → coord_reply(follow-up) ...
+> **ontology-crawling** (2m ago):
+> hasPoolType is already being extracted from crawled data...
 ```
-
-Each "계속" triggers the `UserPromptSubmit` hook, which reads pending messages
-from SQLite and displays them with full body content, so the AI can see and
-respond without calling `coord_check` separately.
 
 ### Ending a Conversation
 
-When the conversation is done, use `coord_ack` (not `coord_reply`) for the final message.
-This marks it as acknowledged without posting a new pending message.
+**AI suggests ending** when:
+- `turn_count >= 70% of max_turns`
+- The topic has been resolved
+- No further action items remain
 
-### coord_reply vs coord_ack
+**On end:**
+```
+coord_conv_end:
+  session_id: "<your-session>"
+  summary:    "Agreed to add hasPoolType extraction. Crawling will add it in next sprint."
+```
+
+This acknowledges remaining partner messages, posts a `[conv-end]` info message, and deletes **both** state files + room file.
+
+### Safety Mechanisms
+
+| Mechanism | Details |
+|-----------|---------|
+| Max turns | Default 20 — auto-ends when reached |
+| TTL | 30 minutes — state files auto-expire |
+| Partner termination | `coord_conv_end` deletes both sides' state files |
+| Poll timeout | 15 seconds — then idle until user input |
+
+### Tool Selection Guide
 
 | Tool | Use when | Result |
 |------|----------|--------|
-| `coord_reply` | You have a response that the other session needs to see | Ack original + post new pending reply |
-| `coord_ack` | You've read and handled the message, nothing more to say | Ack original only, no new message |
+| `coord_conv_start` (create) | Creating a new conversation room | Room file + creator state file |
+| `coord_conv_start` (join) | Joining an existing room | Connects both state files + first message |
+| `coord_reply` | Responding during conversation | Ack original + post new pending reply |
+| `coord_conv_end` | Ending the conversation | Ack pending + end msg + delete all state/room files |
+| `coord_ack` | One-off acknowledgment (outside conversation) | Ack only, no new message |
+
+### Normal Mode (Outside Conversation)
+
+When not in conversation mode, hooks behave normally:
+- Pending messages = 0 → silent exit (saves tokens)
+- Pending messages > 0 → shows all pending messages in standard format
 
 ## Example: Frontend→Backend Request
 

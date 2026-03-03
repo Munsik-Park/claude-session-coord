@@ -16,7 +16,8 @@ Session A                    SQLite DB                    Session B
    │                         on startup ──────▶ "1 pending"   │
 ```
 
-- **MCP Server** (stdio): 5 tools for posting, checking, and acknowledging messages
+- **MCP Server** (stdio): 8 tools for posting, checking, acknowledging messages, and conversation mode
+- **Stop Hook**: Autonomous AI-to-AI conversation — polls for partner messages and auto-reinjects them
 - **SQLite**: Zero-config storage in `~/.claude/coordination/coord.db` (WAL mode for concurrent access)
 - **SessionStart Hook**: Automatically shows pending messages when a new session starts
 
@@ -27,7 +28,7 @@ Session A                    SQLite DB                    Session B
 git clone https://github.com/Munsik-Park/claude-session-coord.git ~/work/claude-session-coord
 cd ~/work/claude-session-coord && npm install --production
 
-# 2. Register MCP server (adds 5 tools to all Claude Code sessions)
+# 2. Register MCP server (adds 8 tools to all Claude Code sessions)
 claude mcp add -s user session-coord -- node ~/work/claude-session-coord/scripts/mcp-server.cjs
 
 # 3. Register SessionStart hook (auto-notifies pending messages)
@@ -57,7 +58,7 @@ Add the SessionStart hook to your Claude Code settings (`~/.claude/settings.json
 
 This will:
 - Create `~/.claude/coordination/` directory (SQLite DB storage, auto-created on first use)
-- Add 5 tools to all Claude Code sessions (`coord_post`, `coord_board`, `coord_check`, `coord_ack`, `coord_history`)
+- Add 8 tools to all Claude Code sessions (`coord_post`, `coord_board`, `coord_check`, `coord_ack`, `coord_reply`, `coord_history`, `coord_conv_start`, `coord_conv_end`)
 - Auto-notify pending messages on every session start, `/clear`, or `/compact`
 
 ## Scenario: Two AI Sessions Building a Shopping Mall
@@ -261,6 +262,27 @@ Browse full message history with filters.
 | `limit` | No | Max results (default 50) |
 | `offset` | No | Pagination offset |
 
+### `coord_conv_start`
+Create or join an AI-to-AI conversation room.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `mode` | Yes | `create` (new room) or `join` (existing room) |
+| `session_id` | Yes | Your session identifier |
+| `topic` | No | Conversation topic |
+| `first_message` | No | Body of the first message to send |
+| `project` | No | Project scope |
+| `room_code` | join only | Room code to join (e.g. `conv-x7k2`) |
+| `max_turns` | No | Max turns before auto-end (default 20) |
+
+### `coord_conv_end`
+End a conversation mode.
+
+| Parameter | Required | Description |
+|-----------|----------|-------------|
+| `session_id` | Yes | Your session identifier |
+| `summary` | No | Summary of what was discussed/decided |
+
 ## Message Types
 
 | Type | When to Use |
@@ -293,6 +315,69 @@ Browse full message history with filters.
 - "Check for messages" → AI calls `coord_board` immediately
 - "Tell frontend about this" → AI calls `coord_post`
 - Write rules in CLAUDE.md → no need to repeat every session
+
+## Conversation Mode (Autonomous AI-to-AI)
+
+Two AI sessions can have an **autonomous** back-and-forth discussion. After starting, the AIs exchange messages automatically via the Stop hook — the user only needs to steer direction or end the conversation.
+
+### Quick Start
+
+```bash
+# Terminal A
+/start-conv new                    # → "Room conv-x7k2 created"
+
+# Terminal B
+/start-conv conv-x7k2             # → Joins room, sends greeting
+
+# Terminal A
+"Let's discuss crawling attributes"  # → AI-A responds, Stop hook takes over
+```
+
+### How the Stop Hook Works
+
+```
+AI responds → Stop hook fires
+  → Check conv-mode-{session}.json
+  → Query SQLite for partner's pending messages
+  → Found → block + reinject partner message → AI auto-responds
+  → Not found → poll every 3s (max 15s) → timeout → idle
+```
+
+### Flow
+
+```
+Terminal A                                  Terminal B
+  /start-conv new
+  AI-A: "Room conv-x7k2"
+                                            /start-conv conv-x7k2
+                                            AI-B: joins → sends greeting
+                                            Stop hook: no partner msg → idle
+  User: "Discuss crawling attributes"
+  AI-A → coord_reply(question)
+  Stop hook: polls...                       Stop hook: partner msg → reinject!
+                                            AI-B → auto-response → coord_reply
+  Stop hook: partner msg → reinject!        Stop hook: polls...
+  AI-A → auto-response → coord_reply
+  ...                                       ...
+  (autonomous exchange — no user input needed)
+
+  User: "end" → AI-A → coord_conv_end      Stop hook: state file gone → exit
+```
+
+### User Intervention
+
+Type anything during the conversation to steer direction:
+- **Direction**: "Focus on normalization rules" → AI incorporates into next reply
+- **End**: "Stop" or "End conversation" → AI calls `coord_conv_end(summary="...")`
+
+### Safety
+
+| Mechanism | Details |
+|-----------|---------|
+| Max turns | Default 20 — auto-ends when reached |
+| TTL | 30 minutes — state/room files auto-expire |
+| Partner termination | `coord_conv_end` deletes both sides' state files + room file |
+| Poll timeout | 15 seconds — then idle until next user input |
 
 ## Constraints
 

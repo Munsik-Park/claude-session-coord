@@ -23,6 +23,17 @@
           }
         ]
       }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/conv-stop-hook.cjs\"",
+            "timeout": 20
+          }
+        ]
+      }
     ]
   }
 }
