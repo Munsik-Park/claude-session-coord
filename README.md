@@ -56,10 +56,36 @@ Add the SessionStart hook to your Claude Code settings (`~/.claude/settings.json
 }
 ```
 
+**4. Register Stop hook** (for autonomous AI-to-AI conversation):
+
+Add to each project's `.claude/settings.local.json` where you want conversation mode:
+
+```json
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ~/work/claude-session-coord/scripts/conv-stop-hook.cjs",
+            "timeout": 20
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+> **Note**: Stop hooks must be in project-level `settings.local.json`, not in the plugin's `hooks/hooks.json` (see [Claude Code #10412](https://github.com/anthropics/claude-code/issues/10412)).
+
 This will:
 - Create `~/.claude/coordination/` directory (SQLite DB storage, auto-created on first use)
 - Add 8 tools to all Claude Code sessions (`coord_post`, `coord_board`, `coord_check`, `coord_ack`, `coord_reply`, `coord_history`, `coord_conv_start`, `coord_conv_end`)
 - Auto-notify pending messages on every session start, `/clear`, or `/compact`
+- Enable autonomous AI-to-AI conversation via Stop hook polling
 
 ## Scenario: Two AI Sessions Building a Shopping Mall
 
@@ -270,7 +296,6 @@ Create or join an AI-to-AI conversation room.
 | `mode` | Yes | `create` (new room) or `join` (existing room) |
 | `session_id` | Yes | Your session identifier |
 | `topic` | No | Conversation topic |
-| `first_message` | No | Body of the first message to send |
 | `project` | No | Project scope |
 | `room_code` | join only | Room code to join (e.g. `conv-x7k2`) |
 | `max_turns` | No | Max turns before auto-end (default 20) |
@@ -327,10 +352,10 @@ Two AI sessions can have an **autonomous** back-and-forth discussion. After star
 /start-conv new                    # → "Room conv-x7k2 created"
 
 # Terminal B
-/start-conv conv-x7k2             # → Joins room, sends greeting
+/start-conv conv-x7k2             # → Joins room, waits for user direction
 
-# Terminal A
-"Let's discuss crawling attributes"  # → AI-A responds, Stop hook takes over
+# Either terminal — user gives topic
+"Let's discuss crawling attributes"  # → AI sends first message, Stop hook takes over
 ```
 
 ### How the Stop Hook Works
@@ -348,12 +373,12 @@ AI responds → Stop hook fires
 ```
 Terminal A                                  Terminal B
   /start-conv new
-  AI-A: "Room conv-x7k2"
+  AI-A: "Room conv-x7k2 created"
                                             /start-conv conv-x7k2
-                                            AI-B: joins → sends greeting
-                                            Stop hook: no partner msg → idle
+                                            AI-B: "Connected. Waiting for direction."
+
   User: "Discuss crawling attributes"
-  AI-A → coord_reply(question)
+  AI-A → coord_post(first message)
   Stop hook: polls...                       Stop hook: partner msg → reinject!
                                             AI-B → auto-response → coord_reply
   Stop hook: partner msg → reinject!        Stop hook: polls...
@@ -361,7 +386,8 @@ Terminal A                                  Terminal B
   ...                                       ...
   (autonomous exchange — no user input needed)
 
-  User: "end" → AI-A → coord_conv_end      Stop hook: state file gone → exit
+  User: "end" → AI-A → coord_conv_end      Stop hook: ended_by detected → notify
+                                            AI-B → coord_conv_end(summary)
 ```
 
 ### User Intervention
@@ -376,13 +402,13 @@ Type anything during the conversation to steer direction:
 |-----------|---------|
 | Max turns | Default 20 — auto-ends when reached |
 | TTL | 30 minutes — state/room files auto-expire |
-| Partner termination | `coord_conv_end` deletes both sides' state files + room file |
+| Partner termination | `coord_conv_end` marks partner's state with `ended_by` — partner's hook detects and notifies |
 | Poll timeout | 15 seconds — then idle until next user input |
 
 ## Constraints
 
 - **Same machine only**: Sessions share a SQLite file, so they must be on the same computer
-- **Not real-time**: Messages are checked on session start or user instruction (no polling)
+- **Not real-time** (basic mode): Messages are checked on session start or user instruction. Conversation mode uses Stop hook polling for near-real-time exchange
 - **AI judgment**: "Should I notify?" is decided by the AI based on rules. More specific rules = more accurate notifications
 
 ## Design Decisions
