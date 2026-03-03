@@ -86,16 +86,17 @@ AI responds → Stop hook fires
 ### Starting a Conversation
 
 1. **Terminal A**: User runs `/start-conv new` → AI creates a room, gets code (e.g. `conv-x7k2`)
-2. **Terminal B**: User runs `/start-conv conv-x7k2` → AI joins, sends greeting
-3. **Both terminals**: Stop hooks begin autonomous message exchange
+2. **Terminal B**: User runs `/start-conv conv-x7k2` → AI joins, waits for user direction
+3. **User gives topic**: Either side's user types a topic/instruction → AI sends first message
+4. **Both terminals**: Stop hooks begin autonomous message exchange
 
 ### Turn Progression (Autonomous)
 
 ```
 Terminal A                                Terminal B
   /start-conv new                           /start-conv conv-x7k2
-  AI-A: "Room conv-x7k2 created"           AI-B: joins → sends greeting
-                                            Stop hook: no partner msg → idle
+  AI-A: "Room conv-x7k2 created"           AI-B: "Connected. Waiting for direction."
+
   User: "Discuss crawling attributes"
   AI-A → coord_reply(question)
   Stop hook → polls...                      Stop hook → partner msg found!

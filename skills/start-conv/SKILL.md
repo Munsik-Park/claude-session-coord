@@ -35,10 +35,14 @@ Tell the user the room code so they can share it with the other terminal.
 ### Joining a room (`/start-conv <code>`)
 
 ```
-coord_conv_start(mode="join", session_id="<cwd-based>", room_code="<code>", first_message={...})
+coord_conv_start(mode="join", session_id="<cwd-based>", room_code="<code>")
 ```
 
-The first_message should be a greeting or topic-relevant opening.
+After joining, tell the user the connection is established and **wait for user direction**. Do NOT send any message (greeting or otherwise) until the user gives a topic or instruction.
+
+### After connection (both sides)
+
+Both the creator and joiner must **wait for their user's direction** before sending the first message. The Stop hook will automatically detect when the partner sends a message. Do NOT proactively send greetings or start the conversation on your own.
 
 ## Behavior During Conversation
 
