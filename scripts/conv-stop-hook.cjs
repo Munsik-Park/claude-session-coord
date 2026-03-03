@@ -186,13 +186,16 @@ async function pollForMessages() {
       }
 
       try {
+        // Only fetch messages created AFTER this conversation started
+        const convStartedAt = freshState.started_at || "1970-01-01T00:00:00Z";
         const rows = db.prepare(`
           SELECT message_id, session_id, project, message_type, subject, body, ref_message_id, created_at
           FROM coordination_messages
           WHERE status = 'pending' AND session_id = ?
+            AND created_at >= ?
           ORDER BY created_at ASC
           LIMIT 5
-        `).all(currentPartner);
+        `).all(currentPartner, convStartedAt.replace("T", " ").replace("Z", "").slice(0, 19));
 
         if (rows.length > 0) {
           // Found partner messages — build reinject payload

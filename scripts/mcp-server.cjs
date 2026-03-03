@@ -765,20 +765,24 @@ function handleCoordConvEnd(args) {
 
   const partner = state.partner;
 
-  // Acknowledge all remaining pending messages from partner
+  // Acknowledge all remaining pending [conv] messages from BOTH sides
   let pendingAcked = 0;
-  if (partner) {
+  const sessionsToClean = [session_id];
+  if (partner) sessionsToClean.push(partner);
+
+  for (const sid of sessionsToClean) {
     const pending = db.prepare(`
       SELECT message_id FROM coordination_messages
       WHERE status = 'pending' AND session_id = ?
-    `).all(partner);
+        AND (subject LIKE '[conv]%' OR subject LIKE '[conv-end]%')
+    `).all(sid);
 
     for (const row of pending) {
       db.prepare(
         "UPDATE coordination_messages SET status = 'acknowledged', updated_at = datetime('now') WHERE message_id = ?"
       ).run(row.message_id);
     }
-    pendingAcked = pending.length;
+    pendingAcked += pending.length;
   }
 
   // Post [conv-end] as PENDING so partner's Stop hook can detect it
