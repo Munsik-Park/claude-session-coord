@@ -65,6 +65,67 @@ coord_post:
   project: "shopping-mall"
 ```
 
+## AI-to-AI Conversations
+
+Two AI sessions can have a back-and-forth conversation through the coordination board.
+The user only needs to type "계속" (or any prompt) to trigger the `UserPromptSubmit` hook,
+which displays pending messages inline — no manual `coord_check` needed.
+
+### Starting a Conversation
+
+When the user says something like "크롤링에게 물어봐" or "ask the backend session":
+
+```
+coord_post:
+  session_id:   "<your-session>"
+  message_type: "request"
+  subject:      "Question about X"
+  body:         { "question": "How should we handle Y?", "context": "..." }
+  project:      "<shared-project>"
+```
+
+### Replying to a Message
+
+When a pending message appears (via hook or `coord_check`), use `coord_reply`:
+
+```
+coord_reply:
+  message_id:  "<original-message-id>"
+  session_id:  "<your-session>"
+  body:        { "answer": "We should do Z because...", "action_taken": "..." }
+```
+
+`coord_reply` does two things in one call:
+1. **Acknowledges** the original message (marks it `acknowledged`)
+2. **Posts a new reply** as `pending` with `ref_message_id` pointing to the original
+
+### Conversation Flow
+
+```
+Terminal A (user: "크롤링에게 물어봐")     Terminal B (user: "계속")
+  AI-A → coord_post(question)               Hook fires → shows question inline
+                                             AI-B reads question, acts on it
+                                             AI-B → coord_reply(answer)
+  User: "계속" → Hook fires → shows answer
+  AI-A → coord_reply(follow-up) ...
+```
+
+Each "계속" triggers the `UserPromptSubmit` hook, which reads pending messages
+from SQLite and displays them with full body content, so the AI can see and
+respond without calling `coord_check` separately.
+
+### Ending a Conversation
+
+When the conversation is done, use `coord_ack` (not `coord_reply`) for the final message.
+This marks it as acknowledged without posting a new pending message.
+
+### coord_reply vs coord_ack
+
+| Tool | Use when | Result |
+|------|----------|--------|
+| `coord_reply` | You have a response that the other session needs to see | Ack original + post new pending reply |
+| `coord_ack` | You've read and handled the message, nothing more to say | Ack original only, no new message |
+
 ## Example: Frontend→Backend Request
 
 ```

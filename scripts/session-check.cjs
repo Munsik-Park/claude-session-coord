@@ -29,7 +29,7 @@ const db = new Database(DB_PATH, { readonly: true, timeout: 3000 });
 
 try {
   const rows = db.prepare(`
-    SELECT message_id, session_id, project, message_type, subject, created_at
+    SELECT message_id, session_id, project, message_type, subject, body, ref_message_id, created_at
     FROM coordination_messages
     WHERE status = 'pending'
     ORDER BY created_at DESC
@@ -38,6 +38,18 @@ try {
 
   if (rows.length === 0) {
     process.exit(0);
+  }
+
+  // Truncate body for inline display
+  function truncateBody(bodyStr, maxLen = 500) {
+    if (!bodyStr || bodyStr === "{}" || bodyStr === "null") return "";
+    try {
+      const parsed = JSON.parse(bodyStr);
+      const text = typeof parsed === "string" ? parsed : JSON.stringify(parsed, null, 2);
+      return text.length > maxLen ? text.slice(0, maxLen) + "..." : text;
+    } catch {
+      return bodyStr.length > maxLen ? bodyStr.slice(0, maxLen) + "..." : bodyStr;
+    }
   }
 
   // Format time ago
@@ -55,7 +67,15 @@ try {
   const lines = [`[session-coord] ${rows.length} pending message${rows.length > 1 ? "s" : ""}:`];
   for (const r of rows) {
     const proj = r.project ? ` [${r.project}]` : "";
-    lines.push(`  ${r.message_id} | ${r.message_type} from ${r.session_id}${proj}: "${r.subject}" (${timeAgo(r.created_at)})`);
+    const body = truncateBody(r.body);
+    const isReply = r.ref_message_id ? ` (reply to ${r.ref_message_id})` : "";
+    lines.push("  ─────────────────────────────────────────");
+    lines.push(`  📨 ${r.message_id} | ${r.message_type} from ${r.session_id}${proj} (${timeAgo(r.created_at)})${isReply}`);
+    lines.push(`  Subject: ${r.subject}`);
+    if (body) {
+      lines.push(`  Body: ${body}`);
+    }
+    lines.push(`  → Reply: coord_reply(message_id="${r.message_id}", session_id="<your-session>", body={...})`);
   }
   console.log(lines.join("\n"));
 } catch (err) {

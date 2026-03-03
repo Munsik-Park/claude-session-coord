@@ -3,7 +3,7 @@
  * claude-session-coord MCP Server
  *
  * SQLite-backed inter-session coordination for Claude Code.
- * Provides 5 tools: coord_post, coord_board, coord_check, coord_ack, coord_history
+ * Provides 6 tools: coord_post, coord_board, coord_check, coord_ack, coord_reply, coord_history
  *
  * Protocol: stdio (JSON-RPC via stdin/stdout)
  * Storage:  ~/.claude/coordination/coord.db (SQLite WAL mode)
@@ -183,6 +183,34 @@ const TOOLS = [
         },
       },
       required: ["message_id", "ack_session_id"],
+    },
+  },
+  {
+    name: "coord_reply",
+    description:
+      "Reply to a coordination message. Acknowledges the original and posts a response in one step. Use for AI-to-AI conversations.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        message_id: {
+          type: "string",
+          description: "The message_id to reply to (required)",
+        },
+        session_id: {
+          type: "string",
+          description: "Your session identifier (required)",
+        },
+        body: {
+          type: "object",
+          description: "Structured reply payload (JSON object)",
+          additionalProperties: true,
+        },
+        subject: {
+          type: "string",
+          description: "Override subject (defaults to 'RE: <original subject>')",
+        },
+      },
+      required: ["message_id", "session_id"],
     },
   },
   {
@@ -402,6 +430,54 @@ function handleCoordAck(args) {
   }, null, 2));
 }
 
+function handleCoordReply(args) {
+  const { message_id, session_id, body, subject } = args;
+  if (!message_id || !session_id) {
+    return err("message_id and session_id are required");
+  }
+
+  // Find the original message
+  const original = db.prepare(
+    "SELECT * FROM coordination_messages WHERE message_id = ?"
+  ).get(message_id);
+
+  if (!original) {
+    return err(`Message not found: ${message_id}`);
+  }
+
+  // Step 1: Acknowledge the original (only if still pending)
+  if (original.status === "pending") {
+    db.prepare(
+      "UPDATE coordination_messages SET status = 'acknowledged', updated_at = datetime('now') WHERE message_id = ?"
+    ).run(message_id);
+  }
+
+  // Step 2: Post the reply as a new pending message
+  const replyId = genMessageId();
+  const replySubject = subject || `RE: ${original.subject}`;
+  const replyBody = JSON.stringify(body || {});
+
+  db.prepare(`
+    INSERT INTO coordination_messages
+      (message_id, session_id, project, message_type, subject, body, ref_message_id, status)
+    VALUES (?, ?, ?, 'request', ?, ?, ?, 'pending')
+  `).run(
+    replyId,
+    session_id,
+    original.project || "",
+    replySubject,
+    replyBody,
+    message_id
+  );
+
+  return ok(JSON.stringify({
+    acknowledged: message_id,
+    reply_message_id: replyId,
+    subject: replySubject,
+    message: `Replied to "${original.subject}" from ${original.session_id}`,
+  }, null, 2));
+}
+
 function handleCoordHistory(args) {
   const { project, session_id, message_type, status, limit, offset } = args || {};
 
@@ -457,6 +533,7 @@ const HANDLER_MAP = {
   coord_board: handleCoordBoard,
   coord_check: handleCoordCheck,
   coord_ack: handleCoordAck,
+  coord_reply: handleCoordReply,
   coord_history: handleCoordHistory,
 };
 
