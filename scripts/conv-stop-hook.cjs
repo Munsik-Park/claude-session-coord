@@ -87,8 +87,15 @@ if (!conv) {
 }
 
 if (!conv.partner) {
-  // Room created but no one joined yet — exit silently
   process.exit(0);
+}
+
+// If coord_wait_for_reply is actively polling (last_poll_at < 30s), skip to avoid duplicates
+if (conv.last_poll_at) {
+  const pollAge = Date.now() - new Date(conv.last_poll_at + "Z").getTime();
+  if (pollAge < 30000) {
+    process.exit(0);
+  }
 }
 
 // ─── Poll for partner messages ────────────────────────────────────────────────

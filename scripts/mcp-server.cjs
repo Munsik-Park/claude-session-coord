@@ -71,11 +71,16 @@ db.exec(`
   );
 `);
 
-// Migration: add room_code column if missing
+// Migrations
 try {
   db.prepare("SELECT room_code FROM coordination_messages LIMIT 0").run();
 } catch {
   db.exec("ALTER TABLE coordination_messages ADD COLUMN room_code TEXT");
+}
+try {
+  db.prepare("SELECT last_poll_at FROM conversations LIMIT 0").run();
+} catch {
+  db.exec("ALTER TABLE conversations ADD COLUMN last_poll_at TEXT");
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -779,6 +784,9 @@ async function handleCoordWaitForReply(args) {
   const pollInterval = 3000;
   const roomCode = conv.room_code;
   const startTime = Date.now();
+
+  // Mark polling active so Stop hook skips duplicate detection
+  db.prepare("UPDATE conversations SET last_poll_at = datetime('now') WHERE session_id = ?").run(session_id);
 
   // First check (instant, no sleep)
   const checkOnce = (partner) => {
