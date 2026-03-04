@@ -279,27 +279,34 @@ async function pollForMessages() {
       }
     }
 
-    // Check if we've exceeded max wait
+    // Check if we've exceeded max wait per poll cycle
     const elapsed = Date.now() - startTime;
     if (elapsed >= MAX_WAIT) {
-      // No messages found after polling timeout.
-      // If turn_count == 0 (waiting for first contact), re-block to keep polling.
+      // Re-read state — check TTL expiry as the only exit condition
       const latestState = readConvState(sessionName);
-      if (latestState && latestState.turn_count === 0 && latestState.partner) {
-        const waitPolls = (latestState.wait_polls || 0) + 1;
-        const MAX_WAIT_POLLS = 12; // 12 × ~18s ≈ ~3.5 minutes total
-
-        if (waitPolls <= MAX_WAIT_POLLS) {
-          updateConvState(sessionName, { wait_polls: waitPolls });
-          const output = JSON.stringify({
-            decision: "block",
-            reason: `[conv-wait] Waiting for partner's first message... (${waitPolls}/${MAX_WAIT_POLLS})`,
-          });
-          process.stdout.write(output);
-          process.exit(0);
-        }
+      if (!latestState) {
+        process.exit(0); // conversation ended externally
       }
-      // Max waits exceeded or already in conversation — go idle
+      if (isExpired(latestState)) {
+        deleteStateFile(sessionName);
+        process.exit(0);
+      }
+      if (latestState.ended_by) {
+        // Partner ended while we were polling — handled at top of next cycle
+        process.exit(0);
+      }
+
+      // Conversation still active — re-block to keep polling
+      const waitPolls = (latestState.wait_polls || 0) + 1;
+      updateConvState(sessionName, { wait_polls: waitPolls });
+      const label = latestState.turn_count === 0
+        ? `Waiting for partner's first message... (poll ${waitPolls})`
+        : `Waiting for partner's response... (poll ${waitPolls})`;
+      const output = JSON.stringify({
+        decision: "block",
+        reason: `[conv-wait] ${label}`,
+      });
+      process.stdout.write(output);
       process.exit(0);
     }
 
