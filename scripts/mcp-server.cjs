@@ -825,21 +825,29 @@ async function handleCoordWaitForReply(args) {
     return null;
   };
 
-  while (Date.now() - startTime < maxWait) {
+  // Immediate first check (no sleep)
+  {
     const current = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
     const partner = current ? current.partner : null;
     const result = checkOnce(partner);
     if (result) return ok(JSON.stringify(result, null, 2));
+  }
 
-    // Sleep for remaining time or pollInterval, whichever is shorter
+  // Poll loop with sleep
+  while (Date.now() - startTime < maxWait) {
     const remaining = maxWait - (Date.now() - startTime);
     if (remaining <= 0) break;
     await new Promise(resolve => setTimeout(resolve, Math.min(pollInterval, remaining)));
+
+    const current = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
+    const partner = current ? current.partner : null;
+    const result = checkOnce(partner);
+    if (result) return ok(JSON.stringify(result, null, 2));
   }
 
   // Timeout
-  const current = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
-  const partner = current ? current.partner : null;
+  const finalConv = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
+  const partner = finalConv ? finalConv.partner : null;
   return ok(JSON.stringify({
     status: "timeout",
     partner: partner || "none",
