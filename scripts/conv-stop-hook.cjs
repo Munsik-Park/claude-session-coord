@@ -17,6 +17,12 @@ const os = require("os");
 const fs = require("fs");
 
 const DB_DIR = path.join(os.homedir(), ".claude", "coordination");
+const DEBUG_LOG = path.join(DB_DIR, "conv-debug.log");
+
+function debugLog(msg) {
+  const ts = new Date().toISOString();
+  try { fs.appendFileSync(DEBUG_LOG, `[${ts}] ${msg}\n`); } catch { /* ok */ }
+}
 const DB_PATH = path.join(DB_DIR, "coord.db");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -217,13 +223,16 @@ async function pollForMessages() {
       let db;
       try {
         db = new Database(DB_PATH, { readonly: true, timeout: 3000 });
-      } catch {
+      } catch (e) {
+        debugLog(`DB open failed: ${e.message}`);
         process.exit(0);
       }
 
       try {
         // Only fetch messages created AFTER this conversation started
         const convStartedAt = freshState.started_at || "1970-01-01T00:00:00Z";
+        const startedAtFormatted = convStartedAt.replace("T", " ").replace("Z", "").slice(0, 19);
+        debugLog(`[${sessionName}] polling partner=${currentPartner} started_at>=${startedAtFormatted}`);
         const rows = db.prepare(`
           SELECT message_id, session_id, project, message_type, subject, body, ref_message_id, created_at
           FROM coordination_messages
@@ -231,9 +240,11 @@ async function pollForMessages() {
             AND created_at >= ?
           ORDER BY created_at ASC
           LIMIT 5
-        `).all(currentPartner, convStartedAt.replace("T", " ").replace("Z", "").slice(0, 19));
+        `).all(currentPartner, startedAtFormatted);
 
+        debugLog(`[${sessionName}] found ${rows.length} messages`);
         if (rows.length > 0) {
+          debugLog(`[${sessionName}] first msg: ${rows[0].message_id} subject=${rows[0].subject}`);
           // Found partner messages — build reinject payload
           const newTurnCount = freshState.turn_count + 1;
           const lastMsg = rows[rows.length - 1];

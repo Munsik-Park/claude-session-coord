@@ -698,6 +698,7 @@ function handleCoordConvStart(args) {
     fs.writeFileSync(roomPath, JSON.stringify(room, null, 2));
 
     // Create joiner's state file
+    // Use room creation time as started_at so both sides share the same message filter baseline
     const joinerState = {
       active: true,
       session_id,
@@ -705,7 +706,7 @@ function handleCoordConvStart(args) {
       room_code,
       project: convProject,
       topic: convTopic,
-      started_at: new Date().toISOString(),
+      started_at: room.created_at || new Date().toISOString(),
       expires_at: room.expires_at,
       turn_count: 0,
       max_turns: room.max_turns || maxT,
@@ -724,14 +725,18 @@ function handleCoordConvStart(args) {
       } catch { /* non-critical */ }
     }
 
-    // Clean up stale pending messages between the two sessions
+    // Clean up stale pending messages from BEFORE this room was created
+    // Do NOT clean messages created after room creation — they are valid conversation messages
     try {
+      const roomCreatedAt = room.created_at || "1970-01-01T00:00:00Z";
+      const roomCreatedFormatted = roomCreatedAt.replace("T", " ").replace("Z", "").slice(0, 19);
       const stale = db.prepare(`
         SELECT message_id FROM coordination_messages
         WHERE status = 'pending'
           AND subject LIKE '[conv]%'
           AND (session_id = ? OR session_id = ?)
-      `).all(session_id, creator);
+          AND created_at < ?
+      `).all(session_id, creator, roomCreatedFormatted);
       for (const row of stale) {
         db.prepare(
           "UPDATE coordination_messages SET status = 'acknowledged', updated_at = datetime('now') WHERE message_id = ?"
