@@ -85,15 +85,13 @@ try {
 
   if (conv && conv.partner) {
     // ━━━ CONVERSATION MODE ━━━
-    const startedAt = conv.started_at || "1970-01-01 00:00:00";
-
     const rows = db.prepare(`
       SELECT message_id, session_id, subject, body, created_at
       FROM coordination_messages
       WHERE status = 'pending' AND session_id = ?
-        AND created_at >= ?
+        AND room_code = ?
       ORDER BY created_at ASC LIMIT 10
-    `).all(conv.partner, startedAt);
+    `).all(conv.partner, conv.room_code);
 
     if (rows.length === 0) {
       console.log(`[conv] ${conv.session_id} \u2194 ${conv.partner} | ${conv.topic}`);

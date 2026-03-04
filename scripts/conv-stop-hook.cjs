@@ -98,7 +98,7 @@ const MAX_WAIT = 15000;
 
 async function pollForMessages() {
   const startTime = Date.now();
-  const startedAt = conv.started_at || "1970-01-01 00:00:00";
+  const roomCode = conv.room_code;
 
   while (true) {
     let pollDb;
@@ -115,9 +115,9 @@ async function pollForMessages() {
         FROM coordination_messages
         WHERE status = 'pending' AND session_id = ?
           AND subject LIKE '[conv-end]%'
-          AND created_at >= ?
+          AND room_code = ?
         ORDER BY created_at DESC LIMIT 1
-      `).get(conv.partner, startedAt);
+      `).get(conv.partner, roomCode);
 
       if (endMsg) {
         pollDb.close();
@@ -136,9 +136,9 @@ async function pollForMessages() {
         FROM coordination_messages
         WHERE status = 'pending' AND session_id = ?
           AND subject LIKE '[conv]%'
-          AND created_at >= ?
+          AND room_code = ?
         ORDER BY created_at ASC LIMIT 5
-      `).all(conv.partner, startedAt);
+      `).all(conv.partner, roomCode);
 
       pollDb.close();
 

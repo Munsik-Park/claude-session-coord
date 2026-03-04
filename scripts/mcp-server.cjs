@@ -60,6 +60,8 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_cm_type      ON coordination_messages(message_type);
   CREATE INDEX IF NOT EXISTS idx_cm_created   ON coordination_messages(created_at DESC);
 
+  CREATE INDEX IF NOT EXISTS idx_cm_room ON coordination_messages(room_code);
+
   CREATE TABLE IF NOT EXISTS conversations (
     session_id TEXT PRIMARY KEY,
     partner TEXT,
@@ -68,6 +70,13 @@ db.exec(`
     started_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 `);
+
+// Migration: add room_code column if missing
+try {
+  db.prepare("SELECT room_code FROM coordination_messages LIMIT 0").run();
+} catch {
+  db.exec("ALTER TABLE coordination_messages ADD COLUMN room_code TEXT");
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -325,12 +334,16 @@ function handleCoordPost(args) {
   const bodyJson = JSON.stringify(body || {});
   const proj = project || "";
 
+  // Auto-attach room_code if in conversation mode
+  const conv = db.prepare("SELECT room_code FROM conversations WHERE session_id = ?").get(session_id);
+  const roomCode = conv ? conv.room_code : null;
+
   const stmt = db.prepare(`
     INSERT INTO coordination_messages
-      (message_id, session_id, project, message_type, subject, body, ref_message_id, expires_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      (message_id, session_id, project, message_type, subject, body, ref_message_id, expires_at, room_code)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(messageId, session_id, proj, message_type, subject, bodyJson, ref_message_id || null, expires_at || null);
+  stmt.run(messageId, session_id, proj, message_type, subject, bodyJson, ref_message_id || null, expires_at || null, roomCode);
 
   return ok(JSON.stringify({
     message_id: messageId,
@@ -534,17 +547,22 @@ function handleCoordReply(args) {
   const replySubject = subject || `RE: ${original.subject}`;
   const replyBody = JSON.stringify(body || {});
 
+  // Inherit room_code from original message or current conversation
+  const conv = db.prepare("SELECT room_code FROM conversations WHERE session_id = ?").get(session_id);
+  const roomCode = original.room_code || (conv ? conv.room_code : null);
+
   db.prepare(`
     INSERT INTO coordination_messages
-      (message_id, session_id, project, message_type, subject, body, ref_message_id, status)
-    VALUES (?, ?, ?, 'request', ?, ?, ?, 'pending')
+      (message_id, session_id, project, message_type, subject, body, ref_message_id, status, room_code)
+    VALUES (?, ?, ?, 'request', ?, ?, ?, 'pending', ?)
   `).run(
     replyId,
     session_id,
     original.project || "",
     replySubject,
     replyBody,
-    message_id
+    message_id,
+    roomCode
   );
 
   return ok(JSON.stringify({
@@ -726,9 +744,9 @@ function handleCoordConvEnd(args) {
   });
   db.prepare(`
     INSERT INTO coordination_messages
-      (message_id, session_id, project, message_type, subject, body, status)
-    VALUES (?, ?, '', 'info', ?, ?, 'pending')
-  `).run(endMessageId, session_id, `[conv-end] ${conv.topic}`, endBody);
+      (message_id, session_id, project, message_type, subject, body, status, room_code)
+    VALUES (?, ?, '', 'info', ?, ?, 'pending', ?)
+  `).run(endMessageId, session_id, `[conv-end] ${conv.topic}`, endBody, conv.room_code);
 
   // Delete own row from conversations (partner's row stays — their hook detects [conv-end])
   db.prepare("DELETE FROM conversations WHERE session_id = ?").run(session_id);
@@ -762,7 +780,7 @@ async function handleCoordWaitForReply(args) {
 
   const maxWait = Math.min((timeout || 60), 120) * 1000;
   const pollInterval = 3000;
-  const startedAt = conv.started_at || "1970-01-01 00:00:00";
+  const roomCode = conv.room_code;
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxWait) {
@@ -772,9 +790,9 @@ async function handleCoordWaitForReply(args) {
       FROM coordination_messages
       WHERE status = 'pending' AND session_id = ?
         AND subject LIKE '[conv-end]%'
-        AND created_at >= ?
+        AND room_code = ?
       ORDER BY created_at DESC LIMIT 1
-    `).get(conv.partner, startedAt);
+    `).get(conv.partner, roomCode);
 
     if (endMsg) {
       return ok(JSON.stringify({
@@ -792,9 +810,9 @@ async function handleCoordWaitForReply(args) {
       FROM coordination_messages
       WHERE status = 'pending' AND session_id = ?
         AND subject LIKE '[conv]%'
-        AND created_at >= ?
+        AND room_code = ?
       ORDER BY created_at ASC LIMIT 5
-    `).all(conv.partner, startedAt);
+    `).all(conv.partner, roomCode);
 
     if (rows.length > 0) {
       const lastMsg = rows[rows.length - 1];
