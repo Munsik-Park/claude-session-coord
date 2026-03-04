@@ -8,7 +8,7 @@
  *   3. Poll for pending [conv] or [conv-end] messages (3s interval, 15s total)
  *   4. [conv-end] found → block(end notice) + exit
  *   5. [conv] found → block(message reinject) + exit
- *   6. Nothing found → block("[conv-wait]") + exit (triggers one more cycle)
+ *   6. Nothing found → exit(0) (idle, Prompt hook resumes on user input)
  */
 
 const path = require("path");
@@ -87,12 +87,7 @@ if (!conv) {
 }
 
 if (!conv.partner) {
-  // Room created but no one joined yet
-  const output = JSON.stringify({
-    decision: "block",
-    reason: `[conv-wait] Waiting for partner to join room ${conv.room_code}...`,
-  });
-  process.stdout.write(output);
+  // Room created but no one joined yet — exit silently, Prompt hook handles resumption
   process.exit(0);
 }
 
