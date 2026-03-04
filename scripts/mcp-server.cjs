@@ -290,6 +290,27 @@ const TOOLS = [
       required: ["session_id"],
     },
   },
+  {
+    name: "coord_wait_for_reply",
+    description:
+      "Wait for partner's reply in conversation mode. Polls DB for up to timeout seconds. Returns partner message when found, or timeout notice. Use this after sending a message to wait for the partner's response.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        session_id: {
+          type: "string",
+          description: "Your session identifier (e.g. 'ontology-ticket')",
+        },
+        timeout: {
+          type: "integer",
+          description: "Max wait time in seconds (default 60, max 120)",
+          minimum: 5,
+          maximum: 120,
+        },
+      },
+      required: ["session_id"],
+    },
+  },
 ];
 
 // ─── Tool handlers ───────────────────────────────────────────────────────────
@@ -723,6 +744,90 @@ function handleCoordConvEnd(args) {
   }, null, 2));
 }
 
+// ─── coord_wait_for_reply ─────────────────────────────────────────────────
+
+async function handleCoordWaitForReply(args) {
+  const { session_id, timeout } = args;
+  if (!session_id) {
+    return err("session_id is required");
+  }
+
+  const conv = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
+  if (!conv) {
+    return err(`No active conversation for ${session_id}`);
+  }
+  if (!conv.partner) {
+    return err("No partner connected yet");
+  }
+
+  const maxWait = Math.min((timeout || 60), 120) * 1000;
+  const pollInterval = 3000;
+  const startedAt = conv.started_at || "1970-01-01 00:00:00";
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWait) {
+    // Check for [conv-end] first
+    const endMsg = db.prepare(`
+      SELECT message_id, session_id, subject, body, created_at
+      FROM coordination_messages
+      WHERE status = 'pending' AND session_id = ?
+        AND subject LIKE '[conv-end]%'
+        AND created_at >= ?
+      ORDER BY created_at DESC LIMIT 1
+    `).get(conv.partner, startedAt);
+
+    if (endMsg) {
+      return ok(JSON.stringify({
+        status: "partner_ended",
+        partner: conv.partner,
+        message: `${conv.partner} ended the conversation.`,
+        message_id: endMsg.message_id,
+        body: endMsg.body,
+      }, null, 2));
+    }
+
+    // Check for [conv] messages
+    const rows = db.prepare(`
+      SELECT message_id, session_id, subject, body, created_at
+      FROM coordination_messages
+      WHERE status = 'pending' AND session_id = ?
+        AND subject LIKE '[conv]%'
+        AND created_at >= ?
+      ORDER BY created_at ASC LIMIT 5
+    `).all(conv.partner, startedAt);
+
+    if (rows.length > 0) {
+      const lastMsg = rows[rows.length - 1];
+      const messages = rows.map(r => ({
+        message_id: r.message_id,
+        subject: r.subject,
+        body: r.body,
+        created_at: r.created_at,
+        age: timeAgo(r.created_at),
+      }));
+
+      return ok(JSON.stringify({
+        status: "message_received",
+        partner: conv.partner,
+        messages,
+        reply_to: lastMsg.message_id,
+        hint: `Use coord_reply(message_id="${lastMsg.message_id}", session_id="${session_id}", ...) to respond.`,
+      }, null, 2));
+    }
+
+    // Wait before next poll
+    await new Promise(resolve => setTimeout(resolve, pollInterval));
+  }
+
+  // Timeout
+  return ok(JSON.stringify({
+    status: "timeout",
+    partner: conv.partner,
+    waited_seconds: Math.round((Date.now() - startTime) / 1000),
+    message: `No reply from ${conv.partner} within ${Math.round(maxWait / 1000)}s. Call again to keep waiting, or proceed with other work.`,
+  }, null, 2));
+}
+
 // ─── Tool dispatcher ─────────────────────────────────────────────────────────
 
 const HANDLER_MAP = {
@@ -734,6 +839,7 @@ const HANDLER_MAP = {
   coord_history: handleCoordHistory,
   coord_conv_start: handleCoordConvStart,
   coord_conv_end: handleCoordConvEnd,
+  coord_wait_for_reply: handleCoordWaitForReply,
 };
 
 // ─── MCP Server setup ────────────────────────────────────────────────────────
@@ -754,7 +860,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return err(`Unknown tool: ${name}`);
   }
   try {
-    return handler(args || {});
+    return await handler(args || {});
   } catch (error) {
     console.error(`Tool error [${name}]:`, error);
     return err(error.message);

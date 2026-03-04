@@ -1,10 +1,10 @@
 ---
 name: start-conv
-description: Start or join an AI-to-AI conversation. Two AI sessions can have an autonomous back-and-forth discussion with Stop hook auto-reinjection.
+description: Start or join an AI-to-AI conversation using MCP tool-based message waiting.
 user_invocable: true
 ---
 
-# /start-conv — AI-to-AI Autonomous Conversation
+# /start-conv — AI-to-AI Conversation
 
 ## Usage
 
@@ -17,34 +17,9 @@ user_invocable: true
 1. **Create**: One session creates a room and gets a short code (e.g. `conv-x7k2`)
 2. **Join**: The other session joins with that code
 3. **Wait**: Both sides wait for their user's direction before sending the first message
-4. **Autonomous**: After the first message, the Stop hook automatically detects partner messages and reinjects them — no user intervention needed
-5. **Direction**: The user can type a message anytime to steer the conversation
-6. **End**: Either AI calls `coord_conv_end(summary="...")` or the user says "stop" / "end conversation"
-
-## Prerequisites
-
-The Stop hook must be registered in each project's `.claude/settings.local.json`:
-
-```json
-{
-  "hooks": {
-    "Stop": [
-      {
-        "matcher": "",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ~/work/claude-session-coord/scripts/conv-stop-hook.cjs",
-            "timeout": 20
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-Without this, the session cannot auto-detect partner messages.
+4. **Message exchange**: After sending a message, call `coord_wait_for_reply` to wait for partner's response
+5. **Direction**: The user can type a message anytime to steer the conversation (interrupts the wait)
+6. **End**: AI autonomously ends when conclusions are reached, or user says "stop"
 
 ## Actions
 
@@ -64,35 +39,41 @@ Tell the user the room code so they can share it with the other terminal.
 coord_conv_start(mode="join", session_id="<cwd-based>", room_code="<code>")
 ```
 
-After joining, tell the user the connection is established and **wait for user direction**. Do NOT send any message (greeting or otherwise) until the user gives a topic or instruction.
+After joining, tell the user the connection is established and **wait for user direction**.
 
 ### After connection (both sides)
 
-Both the creator and joiner must **wait for their user's direction** before sending the first message. The Stop hook will automatically detect when the partner sends a message. Do NOT proactively send greetings or start the conversation on your own.
+Both the creator and joiner must **wait for their user's direction** before sending the first message. Do NOT proactively send greetings or start the conversation on your own.
 
-## Sending the First Message
+## Conversation Flow
 
 When the user gives a topic or instruction:
 
-1. Use `coord_post` to send the first message (there is no prior message to reply to):
-   ```
-   coord_post(session_id="<cwd-based>", message_type="request", subject="[conv] <topic summary>", body={...})
-   ```
-2. The `[conv]` prefix in the subject is **required** — it identifies conversation messages.
+1. **Send message**: `coord_post` (first message) or `coord_reply` (subsequent)
+2. **Wait for reply**: `coord_wait_for_reply(session_id="<id>", timeout=60)`
+3. **Process reply**: Read partner's message, formulate response
+4. **Repeat**: Send reply → wait → process → send → ...
+5. **End**: When conclusions are reached, call `coord_conv_end`
 
-## Behavior During Conversation
+### Example turn:
 
-- **Idle after polling**: After 15 seconds of polling with no partner response, the Stop hook exits silently and the session goes idle. The user can type freely — the Prompt hook will check for partner messages on next user input and resume the conversation.
-- **User input priority**: If the user types a message, always process it first. User direction takes precedence over autonomous conversation flow.
-- **Auto-reply**: When the Stop hook reinjects a partner message (shown as "Stop hook feedback"), read it and respond with `coord_reply`:
-  ```
-  coord_reply(message_id="<from the feedback>", session_id="<cwd-based>", subject="[conv] <response>", body={...})
-  ```
-- **User direction**: If the user types something, incorporate their direction into your next `coord_reply`
-- **Show conversation**: Display partner messages in blockquote format:
-  > **ontology-crawling** (2m ago):
-  > Let me check the crawling data for that attribute...
-- **End**: Call `coord_conv_end(session_id="<id>", summary="...")` with a brief summary of decisions made
+```
+# Send first message
+coord_post(session_id="ontology-ticket", message_type="request",
+  subject="[conv] Let's discuss attribute normalization",
+  body={"message": "..."})
+
+# Wait for partner's response (blocks up to 60s)
+coord_wait_for_reply(session_id="ontology-ticket", timeout=60)
+
+# Partner's message is returned → read and respond
+coord_reply(message_id="<from wait result>", session_id="ontology-ticket",
+  subject="[conv] Response about normalization",
+  body={"message": "..."})
+
+# Wait again...
+coord_wait_for_reply(session_id="ontology-ticket", timeout=60)
+```
 
 ## Tool Selection Guide
 
@@ -100,16 +81,26 @@ When the user gives a topic or instruction:
 |------|----------|-------|
 | `coord_conv_start(mode="create")` | Creating a new room | Returns room code |
 | `coord_conv_start(mode="join")` | Joining an existing room | Connects both sides |
-| `coord_post` | Sending the **first** message in a conversation | No prior message to reply to. Use `[conv]` prefix in subject |
+| `coord_post` | Sending the **first** message | No prior message to reply to. Use `[conv]` prefix in subject |
 | `coord_reply` | All **subsequent** messages | Acknowledges the partner's message + posts reply |
+| `coord_wait_for_reply` | After sending a message | Polls DB up to 60s, returns partner message or timeout |
 | `coord_conv_end` | Ending the conversation | Notifies partner via `[conv-end]` message |
+
+## Behavior Rules
+
+- **User input priority**: If the user types while `coord_wait_for_reply` is running, the wait is interrupted. Process user input first.
+- **User direction during conversation**: Incorporate user's input into your next message to partner.
+- **Show conversation**: Display partner messages in blockquote format:
+  > **ontology-crawling** (2m ago):
+  > Let me check the crawling data for that attribute...
+- **Autonomous ending**: When AI determines conclusions have been reached, call `coord_conv_end` with summary, explain results to user, and stop.
+- **Timeout handling**: If `coord_wait_for_reply` returns timeout, tell the user partner hasn't responded. User decides whether to wait more or end.
 
 ## Cross-Project Conversations
 
-Two sessions in **different projects** (e.g. `ontology-ticket` and `agent-trade-mcp`) can converse. Each session's `session_id` is derived from its project directory name.
+Two sessions in **different projects** can converse. Each session's `session_id` is derived from its project directory name.
 
 **Requirements for each project:**
-- Stop hook registered in `.claude/settings.local.json` (see Prerequisites)
 - `session-coord` MCP server accessible (registered via `claude mcp add -s user`)
 
 No additional configuration needed — the shared SQLite DB (`~/.claude/coordination/coord.db`) handles cross-project communication automatically.
@@ -125,15 +116,20 @@ Terminal A (project-a)                     Terminal B (project-b)
 
   User: "Discuss data format"
   AI-A → coord_post([conv] ...)
-  Stop hook: polls...                      Stop hook: partner msg found!
+  AI-A → coord_wait_for_reply(60s)         AI-B → coord_wait_for_reply(60s)
+                                           (message found!)
                                            AI-B reads → coord_reply([conv] ...)
-  Stop hook: partner msg found!            Stop hook: polls...
+                                           AI-B → coord_wait_for_reply(60s)
+  (message found!)
   AI-A reads → coord_reply([conv] ...)
+  AI-A → coord_wait_for_reply(60s)
   ...                                      ...
-  (autonomous exchange — no user input needed)
+  (autonomous exchange via tool-based waiting)
 
-  User: "end"
-  AI-A → coord_conv_end(summary)           Stop hook: [conv-end] detected → notify
+  AI-A determines conclusion reached
+  AI-A → coord_conv_end(summary)
+  AI-A explains results to user
+                                           AI-B: coord_wait returns "partner_ended"
                                            AI-B → coord_conv_end(summary)
 ```
 
@@ -147,6 +143,7 @@ Type anything during the conversation to steer direction:
 
 | Mechanism | Details |
 |-----------|---------|
-| Partner termination | `coord_conv_end` posts `[conv-end]` message — partner's Stop hook detects and notifies |
-| Poll timeout | 15s polling, then idle — Prompt hook resumes on user input |
-| Stale filter | Only messages created after conversation start are detected (prevents cross-conversation leakage) |
+| Wait timeout | Default 60s per wait call — returns timeout, user decides |
+| Partner termination | `coord_conv_end` posts `[conv-end]` — `coord_wait_for_reply` detects and returns |
+| Stale filter | Only messages created after conversation start are detected |
+| User interrupt | User can type anytime to interrupt wait and steer conversation |

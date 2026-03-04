@@ -87,7 +87,7 @@ if (!conv) {
 }
 
 if (!conv.partner) {
-  // Room created but no one joined yet — exit silently, Prompt hook handles resumption
+  // Room created but no one joined yet — exit silently
   process.exit(0);
 }
 
@@ -175,8 +175,7 @@ async function pollForMessages() {
     }
 
     if (Date.now() - startTime >= MAX_WAIT) {
-      // Timeout — exit silently so user can type freely.
-      // Prompt hook (session-check.cjs) will detect partner messages on next user input.
+      // Timeout — exit silently so user can type freely
       process.exit(0);
     }
 
