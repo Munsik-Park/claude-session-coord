@@ -774,17 +774,17 @@ async function handleCoordWaitForReply(args) {
   if (!conv) {
     return err(`No active conversation for ${session_id}`);
   }
-  if (!conv.partner) {
-    return err("No partner connected yet");
-  }
 
-  const maxWait = Math.min((timeout || 60), 120) * 1000;
+  const maxWait = Math.min((timeout || 5), 120) * 1000;
   const pollInterval = 3000;
   const roomCode = conv.room_code;
   const startTime = Date.now();
 
-  while (Date.now() - startTime < maxWait) {
-    // Check for [conv-end] first
+  // First check (instant, no sleep)
+  const checkOnce = (partner) => {
+    if (!partner) return null;
+
+    // Check for [conv-end]
     const endMsg = db.prepare(`
       SELECT message_id, session_id, subject, body, created_at
       FROM coordination_messages
@@ -792,16 +792,10 @@ async function handleCoordWaitForReply(args) {
         AND subject LIKE '[conv-end]%'
         AND room_code = ?
       ORDER BY created_at DESC LIMIT 1
-    `).get(conv.partner, roomCode);
+    `).get(partner, roomCode);
 
     if (endMsg) {
-      return ok(JSON.stringify({
-        status: "partner_ended",
-        partner: conv.partner,
-        message: `${conv.partner} ended the conversation.`,
-        message_id: endMsg.message_id,
-        body: endMsg.body,
-      }, null, 2));
+      return { status: "partner_ended", partner, message: `${partner} ended the conversation.`, message_id: endMsg.message_id, body: endMsg.body };
     }
 
     // Check for [conv] messages
@@ -812,37 +806,37 @@ async function handleCoordWaitForReply(args) {
         AND subject LIKE '[conv]%'
         AND room_code = ?
       ORDER BY created_at ASC LIMIT 5
-    `).all(conv.partner, roomCode);
+    `).all(partner, roomCode);
 
     if (rows.length > 0) {
       const lastMsg = rows[rows.length - 1];
-      const messages = rows.map(r => ({
-        message_id: r.message_id,
-        subject: r.subject,
-        body: r.body,
-        created_at: r.created_at,
-        age: timeAgo(r.created_at),
-      }));
-
-      return ok(JSON.stringify({
-        status: "message_received",
-        partner: conv.partner,
-        messages,
-        reply_to: lastMsg.message_id,
-        hint: `Use coord_reply(message_id="${lastMsg.message_id}", session_id="${session_id}", ...) to respond.`,
-      }, null, 2));
+      const messages = rows.map(r => ({ message_id: r.message_id, subject: r.subject, body: r.body, created_at: r.created_at, age: timeAgo(r.created_at) }));
+      return { status: "message_received", partner, messages, reply_to: lastMsg.message_id, hint: `Use coord_reply(message_id="${lastMsg.message_id}", session_id="${session_id}", ...) to respond.` };
     }
 
-    // Wait before next poll
-    await new Promise(resolve => setTimeout(resolve, pollInterval));
+    return null;
+  };
+
+  while (Date.now() - startTime < maxWait) {
+    const current = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
+    const partner = current ? current.partner : null;
+    const result = checkOnce(partner);
+    if (result) return ok(JSON.stringify(result, null, 2));
+
+    // Sleep for remaining time or pollInterval, whichever is shorter
+    const remaining = maxWait - (Date.now() - startTime);
+    if (remaining <= 0) break;
+    await new Promise(resolve => setTimeout(resolve, Math.min(pollInterval, remaining)));
   }
 
   // Timeout
+  const current = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
+  const partner = current ? current.partner : null;
   return ok(JSON.stringify({
     status: "timeout",
-    partner: conv.partner,
+    partner: partner || "none",
     waited_seconds: Math.round((Date.now() - startTime) / 1000),
-    message: `No reply from ${conv.partner} within ${Math.round(maxWait / 1000)}s. Call again to keep waiting, or proceed with other work.`,
+    message: `No reply within ${Math.round(maxWait / 1000)}s. Call again to keep waiting.`,
   }, null, 2));
 }
 
