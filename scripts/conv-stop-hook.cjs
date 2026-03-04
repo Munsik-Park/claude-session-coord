@@ -121,6 +121,12 @@ if (!convState) {
 }
 
 // Check if partner ended the conversation
+// Safety: ignore ended_by from a different room (cross-room contamination guard)
+if (convState.ended_by && convState.ended_room && convState.ended_room !== convState.room_code) {
+  // Stale ended_by from a previous room — clear it and continue
+  updateConvState(sessionName, { ended_by: undefined, ended_room: undefined });
+  debugLog(`[${sessionName}] ignored stale ended_by from room ${convState.ended_room} (current: ${convState.room_code})`);
+}
 // Even if ended, deliver any unread partner messages first
 if (convState.ended_by) {
   let unreadLines = [];
@@ -201,16 +207,21 @@ async function pollForMessages() {
     if (!freshState) {
       process.exit(0);
     }
-    // Check if partner ended while we were polling
+    // Check if partner ended while we were polling (only if same room)
     if (freshState.ended_by) {
-      const output = JSON.stringify({
-        decision: "block",
-        reason: `[conv] ${freshState.ended_by} ended the conversation.\n\n` +
-          `Call coord_conv_end(session_id="${freshState.session_id}", summary="...") to save your summary.`,
-      });
-      deleteStateFile(sessionName);
-      process.stdout.write(output);
-      process.exit(0);
+      if (freshState.ended_room && freshState.ended_room !== freshState.room_code) {
+        // Stale ended_by — clear and continue polling
+        updateConvState(sessionName, { ended_by: undefined, ended_room: undefined });
+      } else {
+        const output = JSON.stringify({
+          decision: "block",
+          reason: `[conv] ${freshState.ended_by} ended the conversation.\n\n` +
+            `Call coord_conv_end(session_id="${freshState.session_id}", summary="...") to save your summary.`,
+        });
+        deleteStateFile(sessionName);
+        process.stdout.write(output);
+        process.exit(0);
+      }
     }
     if (isExpired(freshState)) {
       deleteStateFile(sessionName);

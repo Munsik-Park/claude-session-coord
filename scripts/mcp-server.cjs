@@ -815,14 +815,18 @@ function handleCoordConvEnd(args) {
   try { fs.unlinkSync(convStateFile(session_id)); } catch { /* ok */ }
 
   // Mark partner's state as ended (don't delete — let their hook detect it)
+  // Only set ended_by if partner is still in the SAME room (prevents cross-room contamination)
   if (partner) {
     const partnerStatePath = convStateFile(partner);
     if (fs.existsSync(partnerStatePath)) {
       try {
         const partnerState = JSON.parse(fs.readFileSync(partnerStatePath, "utf8"));
-        partnerState.ended_by = session_id;
-        fs.writeFileSync(partnerStatePath, JSON.stringify(partnerState, null, 2));
-      } catch { /* non-critical — delete as fallback */ }
+        if (partnerState.room_code === state.room_code) {
+          partnerState.ended_by = session_id;
+          partnerState.ended_room = state.room_code;
+          fs.writeFileSync(partnerStatePath, JSON.stringify(partnerState, null, 2));
+        }
+      } catch { /* non-critical */ }
     }
   }
 
