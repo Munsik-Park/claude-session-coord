@@ -82,8 +82,7 @@ When the user gives a topic or instruction:
 
 ## Behavior During Conversation
 
-- **Waiting poll**: When the Stop hook shows `[conv-wait]`, respond with a single brief sentence (e.g. "Waiting for partner's response.") without calling any tools. This triggers one more 15-second polling cycle. After that, the session goes idle automatically.
-- **Idle state**: After ~30 seconds without partner response, the session goes idle. The user can type freely — the Prompt hook will check for partner messages on any input and resume the conversation.
+- **Idle after polling**: After 15 seconds of polling with no partner response, the Stop hook exits silently and the session goes idle. The user can type freely — the Prompt hook will check for partner messages on next user input and resume the conversation.
 - **User input priority**: If the user types a message, always process it first. User direction takes precedence over autonomous conversation flow.
 - **Auto-reply**: When the Stop hook reinjects a partner message (shown as "Stop hook feedback"), read it and respond with `coord_reply`:
   ```
@@ -149,5 +148,5 @@ Type anything during the conversation to steer direction:
 | Mechanism | Details |
 |-----------|---------|
 | Partner termination | `coord_conv_end` posts `[conv-end]` message — partner's Stop hook detects and notifies |
-| Poll timeout | ~30s auto-polling, then idle — user can type to resume |
+| Poll timeout | 15s polling, then idle — Prompt hook resumes on user input |
 | Stale filter | Only messages created after conversation start are detected (prevents cross-conversation leakage) |

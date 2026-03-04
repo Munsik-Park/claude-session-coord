@@ -180,12 +180,8 @@ async function pollForMessages() {
     }
 
     if (Date.now() - startTime >= MAX_WAIT) {
-      // Timeout — emit [conv-wait] to trigger one more polling cycle
-      const output = JSON.stringify({
-        decision: "block",
-        reason: `[conv-wait] Waiting for ${conv.partner}'s response...`,
-      });
-      process.stdout.write(output);
+      // Timeout — exit silently so user can type freely.
+      // Prompt hook (session-check.cjs) will detect partner messages on next user input.
       process.exit(0);
     }
 

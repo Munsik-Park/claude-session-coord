@@ -364,7 +364,7 @@ AI responds → Stop hook fires
   → Poll for partner's pending messages (3s interval, 15s total)
   → [conv-end] found → block + notify end
   → [conv] found → block + reinject partner message → AI auto-responds
-  → Not found → block [conv-wait] → one more cycle → idle
+  → Not found → exit(0) → idle until user types
 ```
 
 ### Flow
@@ -400,7 +400,7 @@ Type anything during the conversation to steer direction:
 | Mechanism | Details |
 |-----------|---------|
 | Partner termination | `coord_conv_end` posts `[conv-end]` message — partner's Stop hook detects and notifies |
-| Poll timeout | ~30s auto-polling, then idle — user can type to resume |
+| Poll timeout | 15s polling, then idle — Prompt hook resumes on user input |
 | Stale filter | Only messages created after conversation start are detected |
 
 ## Constraints
