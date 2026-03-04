@@ -194,8 +194,9 @@ if (convState.turn_count >= (convState.max_turns || 20)) {
 
 // ─── Poll for partner messages ───────────────────────────────────────────────
 
-const POLL_INTERVAL = 3000; // 3 seconds
-const MAX_WAIT = 15000;     // 15 seconds total
+const POLL_INTERVAL = 3000;      // 3 seconds
+const MAX_WAIT = 15000;          // 15 seconds total
+const MAX_REBLOCK_CYCLES = 1;    // re-block once before going idle (~30s total)
 
 async function pollForMessages() {
   const startTime = Date.now();
@@ -284,10 +285,11 @@ async function pollForMessages() {
             systemMessage: `[conv] Turn ${newTurnCount} | ${freshState.session_id} \u2194 ${currentPartner} | ${freshState.topic}`,
           });
 
-          // Update turn count
+          // Update turn count and reset wait_polls for next cycle
           updateConvState(sessionName, {
             turn_count: newTurnCount,
             last_message_id: lastMsg.message_id,
+            wait_polls: 0,
           });
 
           process.stdout.write(output);
@@ -318,12 +320,27 @@ async function pollForMessages() {
         process.exit(0);
       }
 
-      // Conversation still active — allow stop so session goes idle.
-      // User can type freely; Prompt hook will detect partner messages.
+      // Hybrid polling: re-block up to MAX_REBLOCK_CYCLES, then idle
       const waitPolls = (latestState.wait_polls || 0) + 1;
-      updateConvState(sessionName, { wait_polls: waitPolls });
-      debugLog(`[${sessionName}] conv-wait poll ${waitPolls}, going idle`);
-      process.exit(0);
+      debugLog(`[${sessionName}] conv-wait poll ${waitPolls}`);
+
+      if (waitPolls <= MAX_REBLOCK_CYCLES) {
+        // Re-block to trigger another polling cycle
+        updateConvState(sessionName, { wait_polls: waitPolls });
+        const label = latestState.turn_count === 0
+          ? `Waiting for partner to join or send first message...`
+          : `Waiting for partner's response...`;
+        const output = JSON.stringify({
+          decision: "block",
+          reason: `[conv-wait] ${label}`,
+        });
+        process.stdout.write(output);
+        process.exit(0);
+      } else {
+        // Max re-blocks reached — go idle. User can type to resume via Prompt hook.
+        debugLog(`[${sessionName}] going idle after ${waitPolls} polls`);
+        process.exit(0);
+      }
     }
 
     // Wait before next poll
