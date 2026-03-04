@@ -2,14 +2,13 @@
 /**
  * claude-session-coord — Stop hook for autonomous AI-to-AI conversation
  *
- * Fires after AI completes a response. If in conversation mode:
- *   1. Check state file for active conversation
- *   2. Query SQLite for partner's pending messages
- *   3. If found → {"decision":"block","reason":"<msg>"} → auto-reinject
- *   4. If not found → poll every 3s for up to 15s
- *   5. After timeout → exit 0 (session goes idle, user can type freely)
- *
- * Safety: max_turns limit, 30min TTL, graceful expiry cleanup
+ * Fires after AI completes a response. If in conversation mode (DB-backed):
+ *   1. Query conversations table for active conversation
+ *   2. If no partner yet → block("Waiting for partner...")
+ *   3. Poll for pending [conv] or [conv-end] messages (3s interval, 15s total)
+ *   4. [conv-end] found → block(end notice) + exit
+ *   5. [conv] found → block(message reinject) + exit
+ *   6. Nothing found → block("[conv-wait]") + exit (triggers one more cycle)
  */
 
 const path = require("path");
@@ -17,12 +16,6 @@ const os = require("os");
 const fs = require("fs");
 
 const DB_DIR = path.join(os.homedir(), ".claude", "coordination");
-const DEBUG_LOG = path.join(DB_DIR, "conv-debug.log");
-
-function debugLog(msg) {
-  const ts = new Date().toISOString();
-  try { fs.appendFileSync(DEBUG_LOG, `[${ts}] ${msg}\n`); } catch { /* ok */ }
-}
 const DB_PATH = path.join(DB_DIR, "coord.db");
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -50,36 +43,6 @@ function truncateBody(bodyStr, maxLen = 500) {
   }
 }
 
-function readConvState(sessionName) {
-  const stateFile = path.join(DB_DIR, `conv-mode-${sessionName}.json`);
-  if (!fs.existsSync(stateFile)) return null;
-  try {
-    const data = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    return data.active ? data : null;
-  } catch {
-    return null;
-  }
-}
-
-function deleteStateFile(sessionName) {
-  const stateFile = path.join(DB_DIR, `conv-mode-${sessionName}.json`);
-  try { fs.unlinkSync(stateFile); } catch { /* ok */ }
-}
-
-function updateConvState(sessionName, updates) {
-  const stateFile = path.join(DB_DIR, `conv-mode-${sessionName}.json`);
-  try {
-    const data = JSON.parse(fs.readFileSync(stateFile, "utf8"));
-    Object.assign(data, updates);
-    fs.writeFileSync(stateFile, JSON.stringify(data, null, 2));
-  } catch { /* non-critical */ }
-}
-
-function isExpired(state) {
-  if (!state.expires_at) return false;
-  return new Date(state.expires_at) < new Date();
-}
-
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -91,15 +54,9 @@ try {
   const stdin = fs.readFileSync(0, "utf8").trim();
   if (stdin) {
     const parsed = JSON.parse(stdin);
-    if (parsed.cwd) {
-      sessionName = path.basename(parsed.cwd);
-    }
+    if (parsed.cwd) sessionName = path.basename(parsed.cwd);
   }
-} catch {
-  // No stdin or not JSON
-}
-
-// ─── Guard: No DB or no session ──────────────────────────────────────────────
+} catch { /* No stdin or not JSON */ }
 
 if (!sessionName || !fs.existsSync(DB_PATH)) {
   process.exit(0);
@@ -112,238 +69,126 @@ try {
   process.exit(0);
 }
 
-// ─── Check conversation state ────────────────────────────────────────────────
+// ─── Check conversation in DB ─────────────────────────────────────────────────
 
-const convState = readConvState(sessionName);
-if (!convState) {
-  // Not in conversation mode — let Stop proceed normally
+const db = new Database(DB_PATH, { readonly: true, timeout: 3000 });
+let conv;
+try {
+  conv = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(sessionName);
+} catch {
+  // Table doesn't exist yet (MCP server hasn't started) — not in conversation mode
+  db.close();
   process.exit(0);
 }
+db.close();
 
-// Check if partner ended the conversation
-// Safety: ignore ended_by from a different room (cross-room contamination guard)
-if (convState.ended_by && convState.ended_room && convState.ended_room !== convState.room_code) {
-  // Stale ended_by from a previous room — clear it and continue
-  updateConvState(sessionName, { ended_by: undefined, ended_room: undefined });
-  debugLog(`[${sessionName}] ignored stale ended_by from room ${convState.ended_room} (current: ${convState.room_code})`);
+if (!conv) {
+  process.exit(0); // Not in conversation mode
 }
-// Even if ended, deliver any unread partner messages first
-if (convState.ended_by) {
-  let unreadLines = [];
-  try {
-    const db = new Database(DB_PATH, { readonly: true, timeout: 3000 });
-    const convStartedAt = convState.started_at || "1970-01-01T00:00:00Z";
-    const rows = db.prepare(`
-      SELECT message_id, session_id, subject, body, created_at
-      FROM coordination_messages
-      WHERE status IN ('pending', 'acknowledged') AND session_id = ?
-        AND (subject LIKE '[conv]%')
-        AND created_at >= ?
-      ORDER BY created_at ASC
-      LIMIT 5
-    `).all(convState.ended_by, convStartedAt.replace("T", " ").replace("Z", "").slice(0, 19));
-    db.close();
 
-    if (rows.length > 0) {
-      unreadLines.push(`[conv] Unread message(s) from ${convState.ended_by}:`);
-      for (const r of rows) {
-        unreadLines.push(`  ${r.subject}`);
-        const body = truncateBody(r.body);
-        if (body) {
-          for (const bline of body.split("\n")) {
-            unreadLines.push(`  ${bline}`);
-          }
-        }
-        unreadLines.push(`  [message_id: ${r.message_id}]`);
-      }
-      unreadLines.push("");
-    }
-  } catch { /* DB read failed — proceed with end notice */ }
-
-  const endNotice = `[conv] ${convState.ended_by} ended the conversation.\n\n` +
-    `Call coord_conv_end(session_id="${convState.session_id}", summary="...") to save your summary.`;
-
+if (!conv.partner) {
+  // Room created but no one joined yet
   const output = JSON.stringify({
     decision: "block",
-    reason: unreadLines.length > 0
-      ? unreadLines.join("\n") + "\n" + endNotice
-      : endNotice,
-  });
-  deleteStateFile(sessionName);
-  process.stdout.write(output);
-  process.exit(0);
-}
-
-// Check expiry
-if (isExpired(convState)) {
-  deleteStateFile(sessionName);
-  process.exit(0);
-}
-
-// Check max turns
-if (convState.turn_count >= (convState.max_turns || 20)) {
-  // Output a friendly termination notice, then let Stop proceed
-  const output = JSON.stringify({
-    decision: "block",
-    reason: `[conv] Max turns (${convState.max_turns || 20}) reached. Conversation auto-ending.\n\n` +
-      `Call coord_conv_end(session_id="${convState.session_id}", summary="...") to save a summary.`,
+    reason: `[conv-wait] Waiting for partner to join room ${conv.room_code}...`,
   });
   process.stdout.write(output);
   process.exit(0);
 }
 
-// ─── Poll for partner messages ───────────────────────────────────────────────
+// ─── Poll for partner messages ────────────────────────────────────────────────
 
-const POLL_INTERVAL = 3000;      // 3 seconds
-const MAX_WAIT = 15000;          // 15 seconds total
-const MAX_REBLOCK_CYCLES = 1;    // re-block once before going idle (~30s total)
+const POLL_INTERVAL = 3000;
+const MAX_WAIT = 15000;
 
 async function pollForMessages() {
   const startTime = Date.now();
-  let currentPartner = convState.partner; // may be null if room just created
+  const startedAt = conv.started_at || "1970-01-01 00:00:00";
 
   while (true) {
-    // Re-read state file to pick up partner changes (e.g. joiner updated it)
-    const freshState = readConvState(sessionName);
-    if (!freshState) {
+    let pollDb;
+    try {
+      pollDb = new Database(DB_PATH, { readonly: true, timeout: 3000 });
+    } catch {
       process.exit(0);
     }
-    // Check if partner ended while we were polling (only if same room)
-    if (freshState.ended_by) {
-      if (freshState.ended_room && freshState.ended_room !== freshState.room_code) {
-        // Stale ended_by — clear and continue polling
-        updateConvState(sessionName, { ended_by: undefined, ended_room: undefined });
-      } else {
+
+    try {
+      // Check for [conv-end] first
+      const endMsg = pollDb.prepare(`
+        SELECT message_id, session_id, subject, body, created_at
+        FROM coordination_messages
+        WHERE status = 'pending' AND session_id = ?
+          AND subject LIKE '[conv-end]%'
+          AND created_at >= ?
+        ORDER BY created_at DESC LIMIT 1
+      `).get(conv.partner, startedAt);
+
+      if (endMsg) {
+        pollDb.close();
         const output = JSON.stringify({
           decision: "block",
-          reason: `[conv] ${freshState.ended_by} ended the conversation.\n\n` +
-            `Call coord_conv_end(session_id="${freshState.session_id}", summary="...") to save your summary.`,
+          reason: `[conv] ${conv.partner} ended the conversation.\n\n` +
+            `Call coord_conv_end(session_id="${conv.session_id}", summary="...") to save your summary.`,
         });
-        deleteStateFile(sessionName);
         process.stdout.write(output);
         process.exit(0);
       }
-    }
-    if (isExpired(freshState)) {
-      deleteStateFile(sessionName);
-      process.exit(0);
-    }
-    currentPartner = freshState.partner;
 
-    // If we still don't have a partner, keep polling (waiting for join)
-    if (currentPartner) {
-      let db;
-      try {
-        db = new Database(DB_PATH, { readonly: true, timeout: 3000 });
-      } catch (e) {
-        debugLog(`DB open failed: ${e.message}`);
-        process.exit(0);
-      }
+      // Check for [conv] messages
+      const rows = pollDb.prepare(`
+        SELECT message_id, session_id, subject, body, created_at
+        FROM coordination_messages
+        WHERE status = 'pending' AND session_id = ?
+          AND subject LIKE '[conv]%'
+          AND created_at >= ?
+        ORDER BY created_at ASC LIMIT 5
+      `).all(conv.partner, startedAt);
 
-      try {
-        // Only fetch messages created AFTER this conversation started
-        const convStartedAt = freshState.started_at || "1970-01-01T00:00:00Z";
-        const startedAtFormatted = convStartedAt.replace("T", " ").replace("Z", "").slice(0, 19);
-        debugLog(`[${sessionName}] polling partner=${currentPartner} started_at>=${startedAtFormatted}`);
-        const rows = db.prepare(`
-          SELECT message_id, session_id, project, message_type, subject, body, ref_message_id, created_at
-          FROM coordination_messages
-          WHERE status = 'pending' AND session_id = ?
-            AND created_at >= ?
-          ORDER BY created_at ASC
-          LIMIT 5
-        `).all(currentPartner, startedAtFormatted);
+      pollDb.close();
 
-        debugLog(`[${sessionName}] found ${rows.length} messages`);
-        if (rows.length > 0) {
-          debugLog(`[${sessionName}] first msg: ${rows[0].message_id} subject=${rows[0].subject}`);
-          // Found partner messages — build reinject payload
-          const newTurnCount = freshState.turn_count + 1;
-          const lastMsg = rows[rows.length - 1];
+      if (rows.length > 0) {
+        const lastMsg = rows[rows.length - 1];
+        const lines = [];
+        lines.push(`[conv] ${conv.partner} (${timeAgo(lastMsg.created_at)}):`);
 
-          const lines = [];
-          lines.push(`[conv] ${currentPartner} (${timeAgo(lastMsg.created_at)}):`);
-
-          for (const r of rows) {
-            lines.push(`  ${r.subject}`);
-            const body = truncateBody(r.body);
-            if (body) {
-              for (const bline of body.split("\n")) {
-                lines.push(`  ${bline}`);
-              }
+        for (const r of rows) {
+          lines.push(`  ${r.subject}`);
+          const body = truncateBody(r.body);
+          if (body) {
+            for (const bline of body.split("\n")) {
+              lines.push(`  ${bline}`);
             }
-            lines.push(`  [message_id: ${r.message_id}]`);
           }
-
-          lines.push("");
-          lines.push(`\u2192 coord_reply(message_id="${lastMsg.message_id}", session_id="${freshState.session_id}", body={...})`);
-          lines.push(`\u2192 coord_conv_end(session_id="${freshState.session_id}", summary="...")`);
-
-          const output = JSON.stringify({
-            decision: "block",
-            reason: lines.join("\n"),
-            systemMessage: `[conv] Turn ${newTurnCount} | ${freshState.session_id} \u2194 ${currentPartner} | ${freshState.topic}`,
-          });
-
-          // Update turn count and reset wait_polls for next cycle
-          updateConvState(sessionName, {
-            turn_count: newTurnCount,
-            last_message_id: lastMsg.message_id,
-            wait_polls: 0,
-          });
-
-          process.stdout.write(output);
-          db.close();
-          process.exit(0);
+          lines.push(`  [message_id: ${r.message_id}]`);
         }
 
-        db.close();
-      } catch {
-        try { db.close(); } catch { /* ok */ }
-      }
-    }
+        lines.push("");
+        lines.push(`\u2192 coord_reply(message_id="${lastMsg.message_id}", session_id="${conv.session_id}", body={...})`);
+        lines.push(`\u2192 coord_conv_end(session_id="${conv.session_id}", summary="...")`);
 
-    // Check if we've exceeded max wait per poll cycle
-    const elapsed = Date.now() - startTime;
-    if (elapsed >= MAX_WAIT) {
-      // Re-read state — check TTL expiry as the only exit condition
-      const latestState = readConvState(sessionName);
-      if (!latestState) {
-        process.exit(0); // conversation ended externally
-      }
-      if (isExpired(latestState)) {
-        deleteStateFile(sessionName);
-        process.exit(0);
-      }
-      if (latestState.ended_by) {
-        // Partner ended while we were polling — handled at top of next cycle
-        process.exit(0);
-      }
-
-      // Hybrid polling: re-block up to MAX_REBLOCK_CYCLES, then idle
-      const waitPolls = (latestState.wait_polls || 0) + 1;
-      debugLog(`[${sessionName}] conv-wait poll ${waitPolls}`);
-
-      if (waitPolls <= MAX_REBLOCK_CYCLES) {
-        // Re-block to trigger another polling cycle
-        updateConvState(sessionName, { wait_polls: waitPolls });
-        const label = latestState.turn_count === 0
-          ? `Waiting for partner to join or send first message...`
-          : `Waiting for partner's response...`;
         const output = JSON.stringify({
           decision: "block",
-          reason: `[conv-wait] ${label}`,
+          reason: lines.join("\n"),
+          systemMessage: `[conv] ${conv.session_id} \u2194 ${conv.partner} | ${conv.topic}`,
         });
         process.stdout.write(output);
         process.exit(0);
-      } else {
-        // Max re-blocks reached — go idle. User can type to resume via Prompt hook.
-        debugLog(`[${sessionName}] going idle after ${waitPolls} polls`);
-        process.exit(0);
       }
+    } catch {
+      try { pollDb.close(); } catch { /* ok */ }
     }
 
-    // Wait before next poll
+    if (Date.now() - startTime >= MAX_WAIT) {
+      // Timeout — emit [conv-wait] to trigger one more polling cycle
+      const output = JSON.stringify({
+        decision: "block",
+        reason: `[conv-wait] Waiting for ${conv.partner}'s response...`,
+      });
+      process.stdout.write(output);
+      process.exit(0);
+    }
+
     await sleep(POLL_INTERVAL);
   }
 }

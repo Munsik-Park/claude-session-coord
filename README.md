@@ -296,9 +296,7 @@ Create or join an AI-to-AI conversation room.
 | `mode` | Yes | `create` (new room) or `join` (existing room) |
 | `session_id` | Yes | Your session identifier |
 | `topic` | No | Conversation topic |
-| `project` | No | Project scope |
 | `room_code` | join only | Room code to join (e.g. `conv-x7k2`) |
-| `max_turns` | No | Max turns before auto-end (default 20) |
 
 ### `coord_conv_end`
 End a conversation mode.
@@ -362,10 +360,11 @@ Two AI sessions can have an **autonomous** back-and-forth discussion. After star
 
 ```
 AI responds → Stop hook fires
-  → Check conv-mode-{session}.json
-  → Query SQLite for partner's pending messages
-  → Found → block + reinject partner message → AI auto-responds
-  → Not found → poll every 3s (max 15s) → timeout → idle
+  → Query conversations table in SQLite
+  → Poll for partner's pending messages (3s interval, 15s total)
+  → [conv-end] found → block + notify end
+  → [conv] found → block + reinject partner message → AI auto-responds
+  → Not found → block [conv-wait] → one more cycle → idle
 ```
 
 ### Flow
@@ -386,7 +385,7 @@ Terminal A                                  Terminal B
   ...                                       ...
   (autonomous exchange — no user input needed)
 
-  User: "end" → AI-A → coord_conv_end      Stop hook: ended_by detected → notify
+  User: "end" → AI-A → coord_conv_end      Stop hook: [conv-end] detected → notify
                                             AI-B → coord_conv_end(summary)
 ```
 
@@ -400,10 +399,9 @@ Type anything during the conversation to steer direction:
 
 | Mechanism | Details |
 |-----------|---------|
-| Max turns | Default 20 — auto-ends when reached |
-| TTL | 30 minutes — state/room files auto-expire |
-| Partner termination | `coord_conv_end` marks partner's state with `ended_by` — partner's hook detects and notifies |
-| Poll timeout | 15 seconds — then idle until next user input |
+| Partner termination | `coord_conv_end` posts `[conv-end]` message — partner's Stop hook detects and notifies |
+| Poll timeout | ~30s auto-polling, then idle — user can type to resume |
+| Stale filter | Only messages created after conversation start are detected |
 
 ## Constraints
 

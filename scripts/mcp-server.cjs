@@ -59,6 +59,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_cm_status    ON coordination_messages(status);
   CREATE INDEX IF NOT EXISTS idx_cm_type      ON coordination_messages(message_type);
   CREATE INDEX IF NOT EXISTS idx_cm_created   ON coordination_messages(created_at DESC);
+
+  CREATE TABLE IF NOT EXISTS conversations (
+    session_id TEXT PRIMARY KEY,
+    partner TEXT,
+    room_code TEXT,
+    topic TEXT DEFAULT '',
+    started_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -253,21 +261,11 @@ const TOOLS = [
         },
         topic: {
           type: "string",
-          description: "Conversation topic (create: optional, join: optional)",
-        },
-        project: {
-          type: "string",
-          description: "Project scope (optional)",
+          description: "Conversation topic (optional)",
         },
         room_code: {
           type: "string",
           description: "Room code to join (required for mode='join')",
-        },
-        max_turns: {
-          type: "integer",
-          description: "Max conversation turns (default 20)",
-          minimum: 2,
-          maximum: 100,
         },
       },
       required: ["mode", "session_id"],
@@ -584,81 +582,31 @@ function handleCoordHistory(args) {
   }, null, 2));
 }
 
-// ─── Conversation mode helpers ───────────────────────────────────────────────
-
-function convStateFile(sessionId) {
-  return path.join(DB_DIR, `conv-mode-${sessionId}.json`);
-}
-
-function readConvState(sessionId) {
-  const p = convStateFile(sessionId);
-  if (!fs.existsSync(p)) return null;
-  try {
-    const data = JSON.parse(fs.readFileSync(p, "utf8"));
-    return data.active ? data : null;
-  } catch {
-    return null;
-  }
-}
-
-function convRoomFile(code) {
-  return path.join(DB_DIR, `conv-room-${code}.json`);
-}
+// ─── Conversation mode (DB-backed) ──────────────────────────────────────────
 
 function handleCoordConvStart(args) {
-  const { mode, session_id, topic, project, room_code, max_turns } = args;
+  const { mode, session_id, topic, room_code } = args;
   if (!mode || !session_id) {
     return err("mode and session_id are required");
   }
 
   // Check for existing active conversation
-  const existing = readConvState(session_id);
+  const existing = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
   if (existing) {
-    return err(`Already in conversation mode with ${existing.partner}. End it first with coord_conv_end.`);
+    return err(`Already in conversation mode with ${existing.partner || "unknown"}. End it first with coord_conv_end.`);
   }
 
-  const maxT = max_turns || 20;
-  const proj = project || "";
-  const expiresAt = new Date(Date.now() + 30 * 60 * 1000).toISOString();
-
   if (mode === "create") {
-    // Generate short room code
     const code = "conv-" + randomUUID().slice(0, 4);
 
-    // Create room file
-    const room = {
-      code,
-      creator: session_id,
-      topic: topic || "",
-      project: proj,
-      max_turns: maxT,
-      created_at: new Date().toISOString(),
-      expires_at: expiresAt,
-    };
-    fs.writeFileSync(convRoomFile(code), JSON.stringify(room, null, 2));
-
-    // Create creator's state file (partner unknown yet)
-    const state = {
-      active: true,
-      session_id,
-      partner: null,
-      room_code: code,
-      project: proj,
-      topic: topic || "",
-      started_at: new Date().toISOString(),
-      expires_at: expiresAt,
-      turn_count: 0,
-      max_turns: maxT,
-      last_message_id: null,
-    };
-    fs.writeFileSync(convStateFile(session_id), JSON.stringify(state, null, 2));
+    db.prepare(
+      "INSERT INTO conversations (session_id, room_code, topic) VALUES (?, ?, ?)"
+    ).run(session_id, code, topic || "");
 
     return ok(JSON.stringify({
       status: "waiting_for_partner",
       room_code: code,
       session_id,
-      max_turns: maxT,
-      expires_at: expiresAt,
       message: `Room created: ${code}. Tell the other session to run: /start-conv ${code}`,
     }, null, 2));
   }
@@ -668,75 +616,36 @@ function handleCoordConvStart(args) {
       return err("room_code is required for join mode");
     }
 
-    // Read room file
-    const roomPath = convRoomFile(room_code);
-    if (!fs.existsSync(roomPath)) {
-      return err(`Room not found: ${room_code}. It may have expired or been deleted.`);
+    // Find the creator by room_code
+    const creator = db.prepare(
+      "SELECT * FROM conversations WHERE room_code = ?"
+    ).get(room_code);
+
+    if (!creator) {
+      return err(`Room not found: ${room_code}. It may have been deleted.`);
     }
 
-    let room;
+    const convTopic = topic || creator.topic || "";
+
+    // Update creator's partner
+    db.prepare(
+      "UPDATE conversations SET partner = ?, topic = ? WHERE session_id = ?"
+    ).run(session_id, convTopic, creator.session_id);
+
+    // Insert joiner row (use creator's started_at as baseline for message filtering)
+    db.prepare(
+      "INSERT INTO conversations (session_id, partner, room_code, topic, started_at) VALUES (?, ?, ?, ?, ?)"
+    ).run(session_id, creator.session_id, room_code, convTopic, creator.started_at);
+
+    // Clean up stale pending [conv] messages from BEFORE this room was created
     try {
-      room = JSON.parse(fs.readFileSync(roomPath, "utf8"));
-    } catch {
-      return err(`Failed to read room file: ${room_code}`);
-    }
-
-    // Check room expiry
-    if (room.expires_at && new Date(room.expires_at) < new Date()) {
-      try { fs.unlinkSync(roomPath); } catch { /* ok */ }
-      return err(`Room ${room_code} has expired.`);
-    }
-
-    const creator = room.creator;
-    const convTopic = topic || room.topic || "";
-    const convProject = project || room.project || "";
-
-    // Update room file with joiner info
-    room.joiner = session_id;
-    room.joined_at = new Date().toISOString();
-    if (topic) room.topic = topic;
-    fs.writeFileSync(roomPath, JSON.stringify(room, null, 2));
-
-    // Create joiner's state file
-    // Use room creation time as started_at so both sides share the same message filter baseline
-    const joinerState = {
-      active: true,
-      session_id,
-      partner: creator,
-      room_code,
-      project: convProject,
-      topic: convTopic,
-      started_at: room.created_at || new Date().toISOString(),
-      expires_at: room.expires_at,
-      turn_count: 0,
-      max_turns: room.max_turns || maxT,
-      last_message_id: null,
-    };
-    fs.writeFileSync(convStateFile(session_id), JSON.stringify(joinerState, null, 2));
-
-    // Update creator's state file with partner info
-    const creatorStatePath = convStateFile(creator);
-    if (fs.existsSync(creatorStatePath)) {
-      try {
-        const creatorState = JSON.parse(fs.readFileSync(creatorStatePath, "utf8"));
-        creatorState.partner = session_id;
-        if (convTopic) creatorState.topic = convTopic;
-        fs.writeFileSync(creatorStatePath, JSON.stringify(creatorState, null, 2));
-      } catch { /* non-critical */ }
-    }
-
-    // Clean up stale pending messages from BEFORE this room was created
-    // Do NOT clean messages created after room creation — they are valid conversation messages
-    try {
-      const roomCreatedAt = room.created_at || "1970-01-01T00:00:00Z";
-      const roomCreatedFormatted = roomCreatedAt.replace("T", " ").replace("Z", "").slice(0, 19);
       const stale = db.prepare(`
         SELECT message_id FROM coordination_messages
         WHERE status = 'pending'
           AND subject LIKE '[conv]%'
           AND (session_id = ? OR session_id = ?)
           AND created_at < ?
-      `).all(session_id, creator, roomCreatedFormatted);
+      `).all(session_id, creator.session_id, creator.started_at);
       for (const row of stale) {
         db.prepare(
           "UPDATE coordination_messages SET status = 'acknowledged', updated_at = datetime('now') WHERE message_id = ?"
@@ -744,13 +653,12 @@ function handleCoordConvStart(args) {
       }
     } catch { /* non-critical */ }
 
-    // No auto-message on join — both sides wait for user direction
     return ok(JSON.stringify({
       status: "connected",
       room_code,
-      partner: creator,
+      partner: creator.session_id,
       topic: convTopic,
-      message: `Joined room ${room_code}. Connected with ${creator}. Waiting for user direction to start conversation.`,
+      message: `Joined room ${room_code}. Connected with ${creator.session_id}. Waiting for user direction to start conversation.`,
     }, null, 2));
   }
 
@@ -763,17 +671,15 @@ function handleCoordConvEnd(args) {
     return err("session_id is required");
   }
 
-  const state = readConvState(session_id);
-  if (!state) {
+  const conv = db.prepare("SELECT * FROM conversations WHERE session_id = ?").get(session_id);
+  if (!conv) {
     return err(`No active conversation for ${session_id}`);
   }
 
-  const partner = state.partner;
+  const partner = conv.partner;
 
-  // Acknowledge only INCOMING pending [conv] messages (from partner)
-  // Do NOT acknowledge own outgoing messages — partner's hook needs to detect them
+  // Acknowledge incoming pending [conv] messages from partner
   let pendingAcked = 0;
-
   if (partner) {
     const incoming = db.prepare(`
       SELECT message_id FROM coordination_messages
@@ -786,61 +692,31 @@ function handleCoordConvEnd(args) {
         "UPDATE coordination_messages SET status = 'acknowledged', updated_at = datetime('now') WHERE message_id = ?"
       ).run(row.message_id);
     }
-    pendingAcked += incoming.length;
+    pendingAcked = incoming.length;
   }
 
-  // Post [conv-end] as PENDING so partner's Stop hook can detect it
+  // Post [conv-end] so partner's Stop hook can detect it
   const endMessageId = genMessageId();
   const endBody = JSON.stringify({
     type: "conversation_end",
-    topic: state.topic,
-    partner: partner,
-    turn_count: state.turn_count,
+    topic: conv.topic,
+    partner,
     summary: summary || null,
   });
   db.prepare(`
     INSERT INTO coordination_messages
-      (message_id, session_id, project, message_type, subject, body, ref_message_id, status)
-    VALUES (?, ?, ?, 'info', ?, ?, ?, 'pending')
-  `).run(
-    endMessageId,
-    session_id,
-    state.project || "",
-    `[conv-end] ${state.topic}`,
-    endBody,
-    state.last_message_id
-  );
+      (message_id, session_id, project, message_type, subject, body, status)
+    VALUES (?, ?, '', 'info', ?, ?, 'pending')
+  `).run(endMessageId, session_id, `[conv-end] ${conv.topic}`, endBody);
 
-  // Delete own state file
-  try { fs.unlinkSync(convStateFile(session_id)); } catch { /* ok */ }
-
-  // Mark partner's state as ended (don't delete — let their hook detect it)
-  // Only set ended_by if partner is still in the SAME room (prevents cross-room contamination)
-  if (partner) {
-    const partnerStatePath = convStateFile(partner);
-    if (fs.existsSync(partnerStatePath)) {
-      try {
-        const partnerState = JSON.parse(fs.readFileSync(partnerStatePath, "utf8"));
-        if (partnerState.room_code === state.room_code) {
-          partnerState.ended_by = session_id;
-          partnerState.ended_room = state.room_code;
-          fs.writeFileSync(partnerStatePath, JSON.stringify(partnerState, null, 2));
-        }
-      } catch { /* non-critical */ }
-    }
-  }
-
-  // Delete room file
-  if (state.room_code) {
-    try { fs.unlinkSync(convRoomFile(state.room_code)); } catch { /* ok */ }
-  }
+  // Delete own row from conversations (partner's row stays — their hook detects [conv-end])
+  db.prepare("DELETE FROM conversations WHERE session_id = ?").run(session_id);
 
   return ok(JSON.stringify({
     status: "conversation_ended",
     session_id,
     partner,
-    topic: state.topic,
-    turns: state.turn_count,
+    topic: conv.topic,
     pending_acked: pendingAcked,
     end_message_id: endMessageId,
     message: `Conversation with ${partner || "unknown"} ended. ${pendingAcked} pending message(s) acknowledged.`,

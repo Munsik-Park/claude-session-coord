@@ -76,15 +76,15 @@ When the user gives a topic or instruction:
 
 1. Use `coord_post` to send the first message (there is no prior message to reply to):
    ```
-   coord_post(session_id="<cwd-based>", message_type="request", subject="[conv] <topic summary>", body={...}, project="<if applicable>")
+   coord_post(session_id="<cwd-based>", message_type="request", subject="[conv] <topic summary>", body={...})
    ```
 2. The `[conv]` prefix in the subject is **required** — it identifies conversation messages.
 
 ## Behavior During Conversation
 
-- **Waiting poll**: When the Stop hook shows `[conv-wait]`, respond with a single brief sentence (e.g. "상대방 응답 대기 중.") without calling any tools. This triggers one more 15-second polling cycle. After that, the session goes idle automatically.
+- **Waiting poll**: When the Stop hook shows `[conv-wait]`, respond with a single brief sentence (e.g. "Waiting for partner's response.") without calling any tools. This triggers one more 15-second polling cycle. After that, the session goes idle automatically.
 - **Idle state**: After ~30 seconds without partner response, the session goes idle. The user can type freely — the Prompt hook will check for partner messages on any input and resume the conversation.
-- **User input priority**: If the user types a message, always process it first — even if a hook feedback arrives simultaneously. User direction takes precedence over autonomous conversation flow.
+- **User input priority**: If the user types a message, always process it first. User direction takes precedence over autonomous conversation flow.
 - **Auto-reply**: When the Stop hook reinjects a partner message (shown as "Stop hook feedback"), read it and respond with `coord_reply`:
   ```
   coord_reply(message_id="<from the feedback>", session_id="<cwd-based>", subject="[conv] <response>", body={...})
@@ -93,7 +93,6 @@ When the user gives a topic or instruction:
 - **Show conversation**: Display partner messages in blockquote format:
   > **ontology-crawling** (2m ago):
   > Let me check the crawling data for that attribute...
-- **Suggest ending**: When `turn_count >= 70% of max_turns`, ask: "Discussion seems to be converging. Should we wrap up?"
 - **End**: Call `coord_conv_end(session_id="<id>", summary="...")` with a brief summary of decisions made
 
 ## Tool Selection Guide
@@ -104,7 +103,7 @@ When the user gives a topic or instruction:
 | `coord_conv_start(mode="join")` | Joining an existing room | Connects both sides |
 | `coord_post` | Sending the **first** message in a conversation | No prior message to reply to. Use `[conv]` prefix in subject |
 | `coord_reply` | All **subsequent** messages | Acknowledges the partner's message + posts reply |
-| `coord_conv_end` | Ending the conversation | Cleans up state, notifies partner |
+| `coord_conv_end` | Ending the conversation | Notifies partner via `[conv-end]` message |
 
 ## Cross-Project Conversations
 
@@ -135,7 +134,7 @@ Terminal A (project-a)                     Terminal B (project-b)
   (autonomous exchange — no user input needed)
 
   User: "end"
-  AI-A → coord_conv_end(summary)           Stop hook: ended_by detected → notify
+  AI-A → coord_conv_end(summary)           Stop hook: [conv-end] detected → notify
                                            AI-B → coord_conv_end(summary)
 ```
 
@@ -149,8 +148,6 @@ Type anything during the conversation to steer direction:
 
 | Mechanism | Details |
 |-----------|---------|
-| Max turns | Default 20 — auto-ends when reached |
-| TTL | 30 minutes — state/room files auto-expire |
-| Partner termination | `coord_conv_end` marks partner's state with `ended_by` — partner's hook detects and notifies |
-| Poll timeout | 2 cycles (~30s auto-polling), then idle — user can type to resume |
+| Partner termination | `coord_conv_end` posts `[conv-end]` message — partner's Stop hook detects and notifies |
+| Poll timeout | ~30s auto-polling, then idle — user can type to resume |
 | Stale filter | Only messages created after conversation start are detected (prevents cross-conversation leakage) |
