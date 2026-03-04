@@ -82,6 +82,7 @@ When the user gives a topic or instruction:
 
 ## Behavior During Conversation
 
+- **Waiting poll**: When the Stop hook shows `[conv-wait] Waiting for partner's first message...`, respond with a single short sentence like "상대방 메시지를 기다리는 중입니다." Do NOT call any tools — just acknowledge briefly so the Stop hook can re-poll.
 - **Auto-reply**: When the Stop hook reinjects a partner message (shown as "Stop hook feedback"), read it and respond with `coord_reply`:
   ```
   coord_reply(message_id="<from the feedback>", session_id="<cwd-based>", subject="[conv] <response>", body={...})

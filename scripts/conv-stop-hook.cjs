@@ -246,7 +246,24 @@ async function pollForMessages() {
     // Check if we've exceeded max wait
     const elapsed = Date.now() - startTime;
     if (elapsed >= MAX_WAIT) {
-      // No messages after polling — go idle, let user input resume
+      // No messages found after polling timeout.
+      // If turn_count == 0 (waiting for first contact), re-block to keep polling.
+      const latestState = readConvState(sessionName);
+      if (latestState && latestState.turn_count === 0 && latestState.partner) {
+        const waitPolls = (latestState.wait_polls || 0) + 1;
+        const MAX_WAIT_POLLS = 12; // 12 × ~18s ≈ ~3.5 minutes total
+
+        if (waitPolls <= MAX_WAIT_POLLS) {
+          updateConvState(sessionName, { wait_polls: waitPolls });
+          const output = JSON.stringify({
+            decision: "block",
+            reason: `[conv-wait] Waiting for partner's first message... (${waitPolls}/${MAX_WAIT_POLLS})`,
+          });
+          process.stdout.write(output);
+          process.exit(0);
+        }
+      }
+      // Max waits exceeded or already in conversation — go idle
       process.exit(0);
     }
 
