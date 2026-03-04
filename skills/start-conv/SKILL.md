@@ -82,7 +82,8 @@ When the user gives a topic or instruction:
 
 ## Behavior During Conversation
 
-- **Waiting poll**: When the Stop hook shows `[conv-wait] Waiting for partner's first message...`, respond with a single short sentence like "상대방 메시지를 기다리는 중입니다." Do NOT call any tools — just acknowledge briefly so the Stop hook can re-poll.
+- **Idle waiting**: When the partner hasn't responded yet, the session goes idle automatically (no action needed). The user can type freely during this time. When the user submits any input, the Prompt hook will check for partner messages and display them.
+- **User input priority**: If the user types a message, always process it first — even if a hook feedback arrives simultaneously. User direction takes precedence over autonomous conversation flow.
 - **Auto-reply**: When the Stop hook reinjects a partner message (shown as "Stop hook feedback"), read it and respond with `coord_reply`:
   ```
   coord_reply(message_id="<from the feedback>", session_id="<cwd-based>", subject="[conv] <response>", body={...})
@@ -150,5 +151,5 @@ Type anything during the conversation to steer direction:
 | Max turns | Default 20 — auto-ends when reached |
 | TTL | 30 minutes — state/room files auto-expire |
 | Partner termination | `coord_conv_end` marks partner's state with `ended_by` — partner's hook detects and notifies |
-| Poll timeout | 15 seconds — then idle until next user input |
+| Poll timeout | 15 seconds — session goes idle, user can type freely |
 | Stale filter | Only messages created after conversation start are detected (prevents cross-conversation leakage) |

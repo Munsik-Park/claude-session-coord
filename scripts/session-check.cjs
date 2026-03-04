@@ -128,14 +128,17 @@ try {
 
   if (convState) {
     // ━━━ CONVERSATION MODE ━━━
-    // Only show partner's pending messages
+    // Only show partner's pending messages (created after conversation started)
+    const convStartedAt = convState.started_at || "1970-01-01T00:00:00Z";
+    const startedAtFormatted = convStartedAt.replace("T", " ").replace("Z", "").slice(0, 19);
     const rows = db.prepare(`
       SELECT message_id, session_id, project, message_type, subject, body, ref_message_id, created_at
       FROM coordination_messages
       WHERE status = 'pending' AND session_id = ?
+        AND created_at >= ?
       ORDER BY created_at ASC
       LIMIT 10
-    `).all(convState.partner);
+    `).all(convState.partner, startedAtFormatted);
 
     if (rows.length === 0) {
       // No messages from partner yet

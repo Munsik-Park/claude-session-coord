@@ -7,7 +7,7 @@
  *   2. Query SQLite for partner's pending messages
  *   3. If found → {"decision":"block","reason":"<msg>"} → auto-reinject
  *   4. If not found → poll every 3s for up to 15s
- *   5. After timeout → exit 0 (idle, user prompt resumes later)
+ *   5. After timeout → exit 0 (session goes idle, user can type freely)
  *
  * Safety: max_turns limit, 30min TTL, graceful expiry cleanup
  */
@@ -307,17 +307,11 @@ async function pollForMessages() {
         process.exit(0);
       }
 
-      // Conversation still active — re-block to keep polling
+      // Conversation still active — allow stop so session goes idle.
+      // User can type freely; Prompt hook will detect partner messages.
       const waitPolls = (latestState.wait_polls || 0) + 1;
       updateConvState(sessionName, { wait_polls: waitPolls });
-      const label = latestState.turn_count === 0
-        ? `Waiting for partner's first message... (poll ${waitPolls})`
-        : `Waiting for partner's response... (poll ${waitPolls})`;
-      const output = JSON.stringify({
-        decision: "block",
-        reason: `[conv-wait] ${label}`,
-      });
-      process.stdout.write(output);
+      debugLog(`[${sessionName}] conv-wait poll ${waitPolls}, going idle`);
       process.exit(0);
     }
 
