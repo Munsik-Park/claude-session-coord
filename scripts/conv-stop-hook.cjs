@@ -115,11 +115,47 @@ if (!convState) {
 }
 
 // Check if partner ended the conversation
+// Even if ended, deliver any unread partner messages first
 if (convState.ended_by) {
+  let unreadLines = [];
+  try {
+    const db = new Database(DB_PATH, { readonly: true, timeout: 3000 });
+    const convStartedAt = convState.started_at || "1970-01-01T00:00:00Z";
+    const rows = db.prepare(`
+      SELECT message_id, session_id, subject, body, created_at
+      FROM coordination_messages
+      WHERE status IN ('pending', 'acknowledged') AND session_id = ?
+        AND (subject LIKE '[conv]%')
+        AND created_at >= ?
+      ORDER BY created_at ASC
+      LIMIT 5
+    `).all(convState.ended_by, convStartedAt.replace("T", " ").replace("Z", "").slice(0, 19));
+    db.close();
+
+    if (rows.length > 0) {
+      unreadLines.push(`[conv] Unread message(s) from ${convState.ended_by}:`);
+      for (const r of rows) {
+        unreadLines.push(`  ${r.subject}`);
+        const body = truncateBody(r.body);
+        if (body) {
+          for (const bline of body.split("\n")) {
+            unreadLines.push(`  ${bline}`);
+          }
+        }
+        unreadLines.push(`  [message_id: ${r.message_id}]`);
+      }
+      unreadLines.push("");
+    }
+  } catch { /* DB read failed — proceed with end notice */ }
+
+  const endNotice = `[conv] ${convState.ended_by} ended the conversation.\n\n` +
+    `Call coord_conv_end(session_id="${convState.session_id}", summary="...") to save your summary.`;
+
   const output = JSON.stringify({
     decision: "block",
-    reason: `[conv] ${convState.ended_by} ended the conversation.\n\n` +
-      `Call coord_conv_end(session_id="${convState.session_id}", summary="...") to save your summary.`,
+    reason: unreadLines.length > 0
+      ? unreadLines.join("\n") + "\n" + endNotice
+      : endNotice,
   });
   deleteStateFile(sessionName);
   process.stdout.write(output);
