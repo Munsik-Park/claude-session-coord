@@ -38,9 +38,9 @@ AI끼리 자율적으로 대화하고, 사용자는 중간에 방향을 잡아�
 1. **Clean up previous room**: Call `coord_conv_end` if an active conversation exists (ignore errors)
 2. Call `coord_conv_start(mode="join", session_id="<cwd-based>", room_code="<code>")`
 3. Tell the user the connection is established
-3. **Poll for partner messages in a loop** — call `coord_wait_for_reply(timeout=5)` up to **6 times** (30s total)
+3. **Poll for partner messages** — call `coord_wait_for_reply(timeout=120)`, retry once on timeout (max **2 attempts**, ~4 min total)
 4. If partner message received at any point → display it → **auto-respond contextually** → enter **Autonomous Loop** (no user direction needed)
-5. Only if ALL 6 polls timeout → tell user "상대방 메시지가 아직 없습니다" and wait for user direction (Turn 0)
+5. Only if both attempts timeout → tell user "상대방 메시지가 아직 없습니다" and wait for user direction (Turn 0)
 
 ## Turn Model
 
@@ -52,9 +52,9 @@ AI끼리 자율적으로 대화하고, 사용자는 중간에 방향을 잡아�
 - Once user gives direction → send first message to partner → enter **Autonomous Loop**
 
 **Joiner side (`<code>`)**: The partner already initiated the conversation, so:
-- Poll for partner messages **up to 6 times** (30s total): `coord_wait_for_reply(timeout=5)` in a loop
+- Poll for partner messages: `coord_wait_for_reply(timeout=120)`, retry once on timeout (2 attempts, ~4 min total)
 - If partner message received at any point → display it → **auto-respond contextually** → enter **Autonomous Loop** immediately
-- Only fall back to user direction if all 6 polls timeout
+- Only fall back to user direction if both attempts timeout
 - If no message yet → wait for user direction (same as creator side)
 
 ### Turn 1+ — Autonomous AI Dialogue Loop
@@ -172,7 +172,7 @@ coord_conv_end(session_id="ontology-ticket", summary="...")
 | `coord_conv_start(mode="join")` | Joining an existing room | Connects both sides |
 | `coord_post` | Sending the **first** message | `[conv]` prefix in subject |
 | `coord_reply` | All **subsequent** messages | Acknowledges partner's message + posts reply |
-| `coord_wait_for_reply` | Autonomous loop | **Always use timeout=5**. Silent on timeout. |
+| `coord_wait_for_reply` | Autonomous loop | **Joiner initial: timeout=120 (2 attempts)**. Autonomous loop: timeout=5. Silent on timeout. |
 | `coord_conv_end` | Ending the conversation | User-approved only. Posts `[conv-end]` |
 
 ## Behavior Rules
@@ -194,7 +194,7 @@ Terminal A (project-a)                     Terminal B (project-b)
   AI-A: "Room conv-x7k2 created"
   AI-A: waiting for user direction...      /start-conv conv-x7k2
                                            AI-B: "Connected"
-  [Turn 0 - Creator]                       AI-B: polling for partner messages...
+  [Turn 0 - Creator]                       AI-B: wait(120s) for partner message...
   User-A: "인사해"
   AI-A → coord_post([conv] 인사)           AI-B wait → message from A!
   AI-A → wait(5s) → wait(5s)              AI-B displays A's message to User-B
@@ -227,5 +227,6 @@ Terminal A (project-a)                     Terminal B (project-b)
 | User control | AI never ends without user approval |
 | Human-in-the-loop | User can redirect anytime by typing |
 | Visibility | Both sides of AI dialogue shown to user |
-| Short poll | ~5s timeout — user input delay is minimal |
+| Joiner poll | ~120s × 2 attempts (4 min max) — enough time for partner to prepare |
+| Autonomous poll | ~5s timeout — user input delay is minimal |
 | Garbage cleanup | Stale messages cleaned on next `new` |

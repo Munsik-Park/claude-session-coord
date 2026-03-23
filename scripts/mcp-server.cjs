@@ -82,6 +82,12 @@ try {
 } catch {
   db.exec("ALTER TABLE conversations ADD COLUMN last_poll_at TEXT");
 }
+try {
+  db.prepare("SELECT target_session FROM coordination_messages LIMIT 0").run();
+} catch {
+  db.exec("ALTER TABLE coordination_messages ADD COLUMN target_session TEXT");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_cm_target ON coordination_messages(target_session)");
+}
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -150,6 +156,10 @@ const TOOLS = [
           type: "string",
           description: "ISO 8601 expiration datetime (optional)",
         },
+        target_session: {
+          type: "string",
+          description: "Target session ID (recipient). If set, only the target session will see this message in coord_check.",
+        },
       },
       required: ["session_id", "message_type", "subject"],
     },
@@ -181,6 +191,7 @@ const TOOLS = [
           description: "Filter by message type",
         },
         project: { type: "string", description: "Filter by project" },
+        target_session: { type: "string", description: "Filter by target session (show messages addressed to this session)" },
         limit: { type: "integer", description: "Max results (default 20)", minimum: 1, maximum: 100 },
       },
     },
@@ -252,6 +263,7 @@ const TOOLS = [
           type: "string",
           enum: ["pending", "acknowledged", "completed", "expired"],
         },
+        target_session: { type: "string", description: "Filter by target session" },
         limit: { type: "integer", description: "Max results (default 50)", minimum: 1, maximum: 200 },
         offset: { type: "integer", description: "Offset for pagination", minimum: 0 },
       },
@@ -330,7 +342,7 @@ const TOOLS = [
 // ─── Tool handlers ───────────────────────────────────────────────────────────
 
 function handleCoordPost(args) {
-  const { session_id, message_type, subject, body, project, ref_message_id, expires_at } = args;
+  const { session_id, message_type, subject, body, project, ref_message_id, expires_at, target_session } = args;
   if (!session_id || !message_type || !subject) {
     return err("session_id, message_type, and subject are required");
   }
@@ -345,15 +357,16 @@ function handleCoordPost(args) {
 
   const stmt = db.prepare(`
     INSERT INTO coordination_messages
-      (message_id, session_id, project, message_type, subject, body, ref_message_id, expires_at, room_code)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (message_id, session_id, project, message_type, subject, body, ref_message_id, expires_at, room_code, target_session)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(messageId, session_id, proj, message_type, subject, bodyJson, ref_message_id || null, expires_at || null, roomCode);
+  stmt.run(messageId, session_id, proj, message_type, subject, bodyJson, ref_message_id || null, expires_at || null, roomCode, target_session || null);
 
   return ok(JSON.stringify({
     message_id: messageId,
     status: "pending",
-    message: `Message posted: [${message_type}] ${subject}`,
+    target_session: target_session || null,
+    message: `Message posted: [${message_type}] ${subject}` + (target_session ? ` → ${target_session}` : ""),
   }, null, 2));
 }
 
@@ -376,7 +389,7 @@ function handleCoordBoard(args) {
 
   // Pending messages
   let pendingQuery = `
-    SELECT message_id, session_id, project, message_type, subject, created_at
+    SELECT message_id, session_id, project, message_type, subject, created_at, target_session
     FROM coordination_messages
     WHERE status = 'pending'
   `;
@@ -422,7 +435,8 @@ function handleCoordBoard(args) {
     for (const msg of pending) {
       const ago = timeAgo(msg.created_at);
       const proj = msg.project ? ` [${msg.project}]` : "";
-      lines.push(`  ${msg.message_id} | ${msg.message_type} | from ${msg.session_id}${proj}`);
+      const target = msg.target_session ? ` → ${msg.target_session}` : " (broadcast)";
+      lines.push(`  ${msg.message_id} | ${msg.message_type} | from ${msg.session_id}${target}${proj}`);
       lines.push(`    "${msg.subject}" (${ago})`);
     }
   }
@@ -431,7 +445,7 @@ function handleCoordBoard(args) {
 }
 
 function handleCoordCheck(args) {
-  const { session_id, message_type, project, limit } = args || {};
+  const { session_id, message_type, project, target_session, limit } = args || {};
 
   let query = "SELECT * FROM coordination_messages WHERE status = 'pending'";
   const params = [];
@@ -447,6 +461,10 @@ function handleCoordCheck(args) {
   if (project) {
     query += " AND project = ?";
     params.push(project);
+  }
+  if (target_session) {
+    query += " AND (target_session = ? OR target_session IS NULL)";
+    params.push(target_session);
   }
 
   query += " ORDER BY created_at DESC LIMIT ?";
@@ -466,6 +484,7 @@ function handleCoordCheck(args) {
     subject: r.subject,
     body: JSON.parse(r.body || "{}"),
     ref_message_id: r.ref_message_id || undefined,
+    target_session: r.target_session || undefined,
     created_at: r.created_at,
     age: timeAgo(r.created_at),
   }));
@@ -579,7 +598,7 @@ function handleCoordReply(args) {
 }
 
 function handleCoordHistory(args) {
-  const { project, session_id, message_type, status, limit, offset } = args || {};
+  const { project, session_id, message_type, status, target_session, limit, offset } = args || {};
 
   let query = "SELECT * FROM coordination_messages WHERE 1=1";
   const params = [];
@@ -600,6 +619,10 @@ function handleCoordHistory(args) {
     query += " AND status = ?";
     params.push(status);
   }
+  if (target_session) {
+    query += " AND (target_session = ? OR target_session IS NULL)";
+    params.push(target_session);
+  }
 
   query += " ORDER BY created_at DESC LIMIT ? OFFSET ?";
   params.push(limit || 50);
@@ -616,6 +639,7 @@ function handleCoordHistory(args) {
     body: JSON.parse(r.body || "{}"),
     status: r.status,
     ref_message_id: r.ref_message_id || undefined,
+    target_session: r.target_session || undefined,
     created_at: r.created_at,
     updated_at: r.updated_at,
   }));

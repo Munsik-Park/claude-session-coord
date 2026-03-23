@@ -134,12 +134,18 @@ try {
 
   } else {
     // ━━━ NORMAL MODE ━━━
-    const rows = db.prepare(`
-      SELECT message_id, session_id, project, message_type, subject, body, ref_message_id, created_at
+    const normalParams = [];
+    let normalQuery = `
+      SELECT message_id, session_id, project, message_type, subject, body, ref_message_id, created_at, target_session
       FROM coordination_messages
       WHERE status = 'pending'
-      ORDER BY created_at DESC LIMIT 10
-    `).all();
+    `;
+    if (sessionName) {
+      normalQuery += " AND (target_session = ? OR target_session IS NULL)";
+      normalParams.push(sessionName);
+    }
+    normalQuery += " ORDER BY created_at DESC LIMIT 10";
+    const rows = db.prepare(normalQuery).all(...normalParams);
 
     if (rows.length === 0) {
       process.exit(0);
@@ -150,8 +156,9 @@ try {
       const proj = r.project ? ` [${r.project}]` : "";
       const body = truncateBody(r.body);
       const isReply = r.ref_message_id ? ` (reply to ${r.ref_message_id})` : "";
+      const target = r.target_session ? ` → ${r.target_session}` : "";
       lines.push("  " + "\u2500".repeat(41));
-      lines.push(`  \uD83D\uDCE8 ${r.message_id} | ${r.message_type} from ${r.session_id}${proj} (${timeAgo(r.created_at)})${isReply}`);
+      lines.push(`  \uD83D\uDCE8 ${r.message_id} | ${r.message_type} from ${r.session_id}${target}${proj} (${timeAgo(r.created_at)})${isReply}`);
       lines.push(`  Subject: ${r.subject}`);
       if (body) {
         lines.push(`  Body: ${body}`);
