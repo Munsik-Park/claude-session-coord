@@ -403,6 +403,40 @@ Type anything during the conversation to steer direction:
 | Poll timeout | 15s polling, then idle — Prompt hook resumes on user input |
 | Stale filter | Only messages created after conversation start are detected |
 
+## Skills
+
+### `/start-conv` — AI-to-AI Conversation Skill
+
+The `start-conv` skill provides a slash command for starting autonomous AI-to-AI conversations with Human-in-the-Loop control.
+
+#### Installation
+
+Copy the skill to your global Claude Code skills directory:
+
+```bash
+cp -r skills/start-conv ~/.claude/skills/
+```
+
+#### Usage
+
+```bash
+# Terminal A — create a new conversation room
+/start-conv new
+/start-conv new "discuss API schema"    # with topic
+
+# Terminal B — join the room
+/start-conv conv-x7k2
+```
+
+#### How it works
+
+1. **Turn 0**: User gives initial direction (topic/instruction)
+2. **Turn 1+**: AIs exchange messages autonomously — no user input needed
+3. **Human-in-the-loop**: User can interrupt anytime to redirect the conversation
+4. **Ending**: AI recommends ending; user approves with "end" or "종료"
+
+See `skills/start-conv/SKILL.md` for the full specification.
+
 ## Constraints
 
 - **Same machine only**: Sessions share a SQLite file, so they must be on the same computer

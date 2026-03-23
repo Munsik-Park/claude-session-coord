@@ -35,11 +35,12 @@ AI끼리 자율적으로 대화하고, 사용자는 중간에 방향을 잡아�
 
 ### Joining a room (`/start-conv <code>`)
 
-1. Call `coord_conv_start(mode="join", session_id="<cwd-based>", room_code="<code>")`
-2. Tell the user the connection is established
-3. **Immediately poll for partner messages** (`coord_wait_for_reply(timeout=5)`)
-4. If partner message received → **auto-enter Autonomous Loop** (respond to partner's message contextually, no user direction needed)
-5. If no message yet → wait for user direction (Turn 0)
+1. **Clean up previous room**: Call `coord_conv_end` if an active conversation exists (ignore errors)
+2. Call `coord_conv_start(mode="join", session_id="<cwd-based>", room_code="<code>")`
+3. Tell the user the connection is established
+3. **Poll for partner messages in a loop** — call `coord_wait_for_reply(timeout=5)` up to **6 times** (30s total)
+4. If partner message received at any point → display it → **auto-respond contextually** → enter **Autonomous Loop** (no user direction needed)
+5. Only if ALL 6 polls timeout → tell user "상대방 메시지가 아직 없습니다" and wait for user direction (Turn 0)
 
 ## Turn Model
 
@@ -51,8 +52,9 @@ AI끼리 자율적으로 대화하고, 사용자는 중간에 방향을 잡아�
 - Once user gives direction → send first message to partner → enter **Autonomous Loop**
 
 **Joiner side (`<code>`)**: The partner already initiated the conversation, so:
-- Poll for partner messages: `coord_wait_for_reply(timeout=5)`
-- If partner message received → display it → **auto-respond contextually** → enter **Autonomous Loop** immediately
+- Poll for partner messages **up to 6 times** (30s total): `coord_wait_for_reply(timeout=5)` in a loop
+- If partner message received at any point → display it → **auto-respond contextually** → enter **Autonomous Loop** immediately
+- Only fall back to user direction if all 6 polls timeout
 - If no message yet → wait for user direction (same as creator side)
 
 ### Turn 1+ — Autonomous AI Dialogue Loop
@@ -181,6 +183,7 @@ coord_conv_end(session_id="ontology-ticket", summary="...")
 - **Silent polling**: NEVER print anything on timeout. Just loop silently.
 - **AI ending**: When conversation feels complete, recommend ending to user. Never call `coord_conv_end` without user approval.
 - **Context awareness**: AI should maintain conversation coherence across turns, building on previous exchanges
+- **Minimal output**: Only display 🤖/💬 conversation messages and essential status changes (연결, 종료). Do NOT output progress text like "상대방 메시지를 확인합니다", "상대방 응답을 기다리고 있습니다", "응답을 보냈습니다" etc. MCP tool calls are visible in the UI already — adding commentary is redundant noise.
 
 ## Flow Diagram
 
