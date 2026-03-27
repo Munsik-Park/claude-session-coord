@@ -175,14 +175,89 @@ coord_conv_end(session_id="ontology-ticket", summary="...")
 | `coord_wait_for_reply` | Autonomous loop | **Joiner initial: timeout=120 (2 attempts)**. Autonomous loop: timeout=5. Silent on timeout. |
 | `coord_conv_end` | Ending the conversation | User-approved only. Posts `[conv-end]` |
 
+## Discussion Protocol
+
+AI-to-AI conversations must mirror the critical evaluation used in human design discussions.
+The goal: substantive dialogue that tests ideas, not polite agreement.
+
+### Response Process
+
+Before responding to any partner proposal, follow this sequence:
+
+1. **UNDERSTAND** — Restate what the partner is proposing in concrete terms (not "I understand")
+2. **VERIFY** — Read relevant source files, check DB schema, or review existing patterns BEFORE evaluating. Never evaluate from memory alone when the proposal touches code, schema, or config.
+3. **EVALUATE** — Check against at least 2 of these dimensions:
+   - **Feasibility**: Does the current codebase/schema/infra support this? What changes are needed?
+   - **Alignment**: Does it follow existing patterns, naming conventions, layer separation?
+   - **Trade-offs**: Cost? Maintenance burden? Migration complexity? Performance impact?
+   - **Alternatives**: Is there a simpler approach that achieves the same goal?
+   - **Scope**: Is this solving the right problem at the right level of abstraction?
+4. **RESPOND** — Choose one:
+
+| Response | When | Format |
+|----------|------|--------|
+| **ACCEPT** | All evaluated dimensions pass | State which dimensions you checked and why it fits |
+| **COUNTER** | One or more dimensions fail | State the issue + provide a specific alternative with reasoning |
+| **PARTIAL** | Some aspects pass, others don't | Accept passing parts, counter failing parts explicitly |
+| **ESCALATE** | Fundamental disagreement or insufficient evidence | Present both positions to user for decision |
+
+### Anti-Patterns (hard rules)
+
+- **No blind acceptance**: Never say "좋은 생각입니다" without stating WHICH dimensions you verified and WHY it passes
+- **No memory-only evaluation**: If the proposal touches code/schema/config — read the actual file before responding
+- **No feature stacking**: Don't add "그리고 이것도 추가하면" on top of an unverified base proposal
+- **No premature consensus**: If you agree on first exchange, challenge at least one dimension as devil's advocate before confirming
+- **No dropped concerns**: If your concern is not addressed by the partner, re-raise it explicitly
+
+### Escalation to User
+
+Pause the autonomous loop and ask the user when:
+- **Architecture conflict**: Different patterns/approaches with no clear winner
+- **Risk disagreement**: One side sees significant risk the other dismisses
+- **Scope conflict**: Disagreement on whether something is in-scope or over-engineering
+- **Evidence stalemate**: Neither side can provide stronger evidence from the codebase
+
+Format:
+```
+사용자 판단이 필요합니다:
+
+[A — session-X 의견]:
+(summary with reasoning)
+
+[B — session-Y 의견]:
+(summary with reasoning)
+
+어느 방향으로 진행할까요?
+```
+
+### Conversation Depth
+
+- **First response**: Always verify + evaluate before accepting (never accept on first hearing)
+- **Consensus threshold**: Both sides must address at least 2 evaluation dimensions before agreement
+- **Devil's advocate**: If both sides agree immediately, one should challenge on scope or alternatives ("더 단순한 방법은 없을까요?")
+- **Minimum per topic**: At least one proposal → counter/question → resolution cycle for design decisions. Quick confirmations ("파일명은 X로 합시다") are exempt.
+
+### Integration with Autonomous Loop
+
+```
+coord_wait_for_reply → message received
+  → UNDERSTAND (parse proposal)
+  → VERIFY (read files if needed — Glob/Read/Grep)
+  → EVALUATE (2+ dimensions)
+  → RESPOND (ACCEPT/COUNTER/PARTIAL/ESCALATE)
+  → coord_reply → loop
+
+If ESCALATE → display both positions → wait for user input → incorporate → coord_reply → loop
+```
+
 ## Behavior Rules
 
-- **Autonomous response**: After Turn 0, AI responds to partner messages automatically without waiting for user input
+- **Autonomous response**: After Turn 0, AI responds to partner messages automatically without waiting for user input. Each response follows the Discussion Protocol (UNDERSTAND → VERIFY → EVALUATE → RESPOND).
 - **User visibility**: ALWAYS display both partner messages and AI's own responses so user can follow the dialogue
 - **User interrupt priority**: If user types during the loop, incorporate their direction immediately
 - **Silent polling**: NEVER print anything on timeout. Just loop silently.
 - **AI ending**: When conversation feels complete, recommend ending to user. Never call `coord_conv_end` without user approval.
-- **Context awareness**: AI should maintain conversation coherence across turns, building on previous exchanges
+- **Context awareness**: AI should maintain conversation coherence across turns. Track unresolved concerns and re-raise them if partner does not address them.
 - **Minimal output**: Only display 🤖/💬 conversation messages and essential status changes (연결, 종료). Do NOT output progress text like "상대방 메시지를 확인합니다", "상대방 응답을 기다리고 있습니다", "응답을 보냈습니다" etc. MCP tool calls are visible in the UI already — adding commentary is redundant noise.
 
 ## Flow Diagram
